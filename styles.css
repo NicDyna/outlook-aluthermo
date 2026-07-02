@@ -231,3 +231,17 @@ body {
   flex: 0 0 auto;
 }
 .linkbtn:hover { text-decoration: underline; }
+
+/* Sende-Ergebnis */
+.send-result {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 13px;
+}
+.send-result--sending { background: var(--card); color: var(--muted); }
+.send-result--ok      { background: #F1FAF1; border-color: #C6E7C6; color: var(--ok); }
+.send-result--error   { background: #FDF3F4; border-color: #F3D6D6; color: var(--error); }
+.send-result__link    { color: var(--brand); }

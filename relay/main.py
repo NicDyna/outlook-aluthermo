@@ -14,6 +14,7 @@ Configuration comes entirely from environment variables (set in Railway):
 """
 
 import os
+import re
 from typing import Any, Optional
 
 import httpx
@@ -90,8 +91,43 @@ def _company_of(record: dict) -> str:
     return ccn if ccn and ccn != name else ""
 
 
+def _extract_id(result: Any) -> Optional[int]:
+    """Neue Datensatz-ID robust aus der Odoo-Antwort ziehen (int / [int] / [{id}] / {id})."""
+    if isinstance(result, int):
+        return result
+    if isinstance(result, dict):
+        return result.get("id")
+    if isinstance(result, list) and result:
+        first = result[0]
+        if isinstance(first, int):
+            return first
+        if isinstance(first, dict):
+            return first.get("id")
+    return None
+
+
+def _safe_filename(name: str) -> str:
+    name = (name or "E-Mail.eml").strip()
+    name = re.sub(r'[\/\\:*?"<>|]', "", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    if not name.lower().endswith(".eml"):
+        name += ".eml"
+    return name[:120] or "E-Mail.eml"
+
+
+def _html_escape(text: str) -> str:
+    return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 class PartnerSearch(BaseModel):
     query: str
+
+
+class EmlAttach(BaseModel):
+    partner_id: int
+    filename: str
+    eml_base64: str
+    subject: str = ""
 
 
 @app.get("/health")
@@ -133,3 +169,48 @@ async def partners_search(
             "is_company": bool(r.get("is_company")),
         })
     return {"partners": partners}
+
+
+@app.post("/chatter/eml")
+async def chatter_eml(
+    body: EmlAttach,
+    x_client_token: Optional[str] = Header(default=None),
+):
+    """Hängt die Original-E-Mail als .eml-Datei an die Chatter eines Kontakts an."""
+    _check_token(x_client_token)
+
+    filename = _safe_filename(body.filename)
+
+    # 1) Anhang direkt am Kontakt anlegen
+    attachment_vals = {
+        "name": filename,
+        "datas": body.eml_base64,
+        "mimetype": "message/rfc822",
+        "res_model": "res.partner",
+        "res_id": body.partner_id,
+    }
+    create_result = await _odoo_call("ir.attachment", "create", {"vals_list": [attachment_vals]})
+    attachment_id = _extract_id(create_result)
+    if not attachment_id:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Anhang-ID nicht erkannt. Odoo-Antwort auf create: {create_result}",
+        )
+
+    # 2) Interne Chatter-Notiz mit verknüpftem Anhang
+    subject = body.subject or filename
+    note_body = f"<p>E-Mail archiviert: {_html_escape(subject)}</p>"
+    post_result = await _odoo_call("res.partner", "message_post", {
+        "ids": [body.partner_id],
+        "body": note_body,
+        "message_type": "comment",
+        "subtype_xmlid": "mail.mt_note",
+        "attachment_ids": [attachment_id],
+    })
+
+    return {
+        "ok": True,
+        "attachment_id": attachment_id,
+        "message_id": _extract_id(post_result),
+        "partner_url": f"{ODOO_BASE_URL}/web#id={body.partner_id}&model=res.partner&view_type=form",
+    }
