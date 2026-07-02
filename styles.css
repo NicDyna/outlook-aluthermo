@@ -1,0 +1,61 @@
+:root {
+  --brand: #714B67;   /* Odoo-Violett */
+  --ok: #107C10;
+  --error: #A80000;
+  --loading: #8A8886;
+  --text: #201F1E;
+  --muted: #605E5C;
+  --border: #EDEBE9;
+  --bg: #FFFFFF;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+
+body {
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.pane { padding: 16px; }
+
+.pane__header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 12px;
+  color: var(--brand);
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #FAF9F8;
+  font-weight: 600;
+}
+
+.status__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--loading);
+  flex: 0 0 auto;
+}
+
+.status--ok        { border-color: #C6E7C6; background: #F1FAF1; color: var(--ok); }
+.status--ok .status__dot   { background: var(--ok); }
+.status--error     { border-color: #F3D6D6; background: #FDF3F4; color: var(--error); }
+.status--error .status__dot{ background: var(--error); }
+
+.hint {
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.hint p { margin: 0; }

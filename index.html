@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>An Odoo senden</title>
+
+  <!-- Cache-Busting: bei jedem Deploy die Versionsnummer (?v=) erhöhen -->
+  <link rel="stylesheet" href="styles.css?v=2026-07-02-1" />
+
+  <!-- Office.js muss von Microsofts CDN geladen werden -->
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+</head>
+<body>
+  <main class="pane">
+    <header class="pane__header">
+      <h1>An Odoo senden</h1>
+    </header>
+
+    <section id="status" class="status status--loading">
+      <span class="status__dot"></span>
+      <span id="status-text">Add-in wird geladen…</span>
+    </section>
+
+    <section class="hint">
+      <p>Grundversion (M1). Die Auswahl <em>Text / .eml</em> und die Kontaktsuche folgen in den nächsten Schritten.</p>
+    </section>
+  </main>
+
+  <script src="taskpane.js?v=2026-07-02-1"></script>
+</body>
+</html>

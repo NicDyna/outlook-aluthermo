@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OfficeApp
+  xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+  xmlns:mailappor="http://schemas.microsoft.com/office/mailappversionoverrides/1.0"
+  xsi:type="MailApp">
+
+  <!-- Eindeutige ID dieses Add-ins (nicht ändern) -->
+  <Id>c291d08f-b881-429f-ab80-797b6c9c17c2</Id>
+  <Version>1.0.0.0</Version>
+  <ProviderName>Dynaplo</ProviderName>
+  <DefaultLocale>de-DE</DefaultLocale>
+  <DisplayName DefaultValue="An Odoo senden"/>
+  <Description DefaultValue="Sendet die geöffnete E-Mail als Text-Notiz oder als .eml-Datei in die Chatter eines Odoo-Kontakts."/>
+  <IconUrl DefaultValue="https://nicdyna.github.io/outlook-aluthermo/assets/icon-64.png"/>
+  <HighResolutionIconUrl DefaultValue="https://nicdyna.github.io/outlook-aluthermo/assets/icon-128.png"/>
+  <SupportUrl DefaultValue="https://nicdyna.github.io/outlook-aluthermo/"/>
+
+  <Hosts>
+    <Host Name="Mailbox"/>
+  </Hosts>
+
+  <!-- Niedrige Mindestanforderung, damit das Add-in breit installierbar ist.
+       Die .eml-Funktion (Mailbox 1.14) wird erst zur Laufzeit im Code freigeschaltet. -->
+  <Requirements>
+    <Sets>
+      <Set Name="Mailbox" MinVersion="1.5"/>
+    </Sets>
+  </Requirements>
+
+  <FormSettings>
+    <Form xsi:type="ItemRead">
+      <DesktopSettings>
+        <SourceLocation DefaultValue="https://nicdyna.github.io/outlook-aluthermo/index.html"/>
+        <RequestedHeight>250</RequestedHeight>
+      </DesktopSettings>
+    </Form>
+  </FormSettings>
+
+  <Permissions>ReadItem</Permissions>
+
+  <Rule xsi:type="RuleCollection" Mode="Or">
+    <Rule xsi:type="ItemIs" ItemType="Message" FormType="Read"/>
+  </Rule>
+
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/mailappversionoverrides" xsi:type="VersionOverridesV1_0">
+    <Requirements>
+      <bt:Sets DefaultMinVersion="1.5">
+        <bt:Set Name="Mailbox"/>
+      </bt:Sets>
+    </Requirements>
+
+    <Hosts>
+      <Host xsi:type="MailHost">
+        <DesktopFormFactor>
+          <FunctionFile resid="functionFile"/>
+
+          <!-- Schaltfläche beim Lesen einer Nachricht -->
+          <ExtensionPoint xsi:type="MessageReadCommandSurface">
+            <OfficeTab id="TabDefault">
+              <Group id="odooGroup">
+                <Label resid="groupLabel"/>
+                <Control xsi:type="Button" id="odooButton">
+                  <Label resid="buttonLabel"/>
+                  <Supertip>
+                    <Title resid="buttonTitle"/>
+                    <Description resid="buttonDesc"/>
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="icon16"/>
+                    <bt:Image size="32" resid="icon32"/>
+                    <bt:Image size="80" resid="icon80"/>
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <SourceLocation resid="taskpaneUrl"/>
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+
+    <Resources>
+      <bt:Images>
+        <bt:Image id="icon16" DefaultValue="https://nicdyna.github.io/outlook-aluthermo/assets/icon-16.png"/>
+        <bt:Image id="icon32" DefaultValue="https://nicdyna.github.io/outlook-aluthermo/assets/icon-32.png"/>
+        <bt:Image id="icon80" DefaultValue="https://nicdyna.github.io/outlook-aluthermo/assets/icon-80.png"/>
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="taskpaneUrl" DefaultValue="https://nicdyna.github.io/outlook-aluthermo/index.html"/>
+        <bt:Url id="functionFile" DefaultValue="https://nicdyna.github.io/outlook-aluthermo/index.html"/>
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="groupLabel" DefaultValue="Odoo"/>
+        <bt:String id="buttonLabel" DefaultValue="An Odoo senden"/>
+        <bt:String id="buttonTitle" DefaultValue="An Odoo senden"/>
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="buttonDesc" DefaultValue="E-Mail als Text-Notiz oder .eml-Datei in die Chatter eines Odoo-Kontakts senden."/>
+      </bt:LongStrings>
+    </Resources>
+  </VersionOverrides>
+</OfficeApp>
