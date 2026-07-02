@@ -1,8 +1,9 @@
 /* "An Odoo senden" – Taskpane
  *
- * M4: .eml-Datei an die Chatter eines Kontakts anhängen (Aktion B).
- * Kontaktsuche über das Relay (M3), Token-Gate über roamingSettings.
- * Text-Versand (Aktion A, mit n8n/Claude) folgt in M5.
+ * M4 + M5 (ohne KI): .eml anhängen ODER saubere Text-Notiz in die Chatter.
+ * Text-Notiz = Kopf (aus Outlook-Daten) + Nachrichtentext; optional nur die
+ * letzte Nachricht (regelbasierter Schnitt im Relay, keine KI).
+ * Der Text wird dabei nur geschnitten/escaped, niemals umgeschrieben.
  */
 
 /* ---------- Konfiguration ---------- */
@@ -13,6 +14,7 @@ var clientToken = "";
 var selectedPartner = null;
 var searchTimer = null;
 var emlSupported = false;
+var bodyText = "";
 
 Office.onReady(function (info) {
   if (!(info && info.host === Office.HostType.Outlook)) {
@@ -65,8 +67,18 @@ function formatList(arr) {
   return arr.map(formatAddress).join(", ");
 }
 
+function joinAddresses(arr) {
+  return (arr || []).map(formatAddress).join(", ");
+}
+
 function metaOf(p) { return [p.email, p.company].filter(Boolean).join(" · ") || "—"; }
 function nameOf(p) { return p.name + (p.is_company ? " (Firma)" : ""); }
+
+function getAttachmentNames() {
+  var atts = Office.context.mailbox.item.attachments || [];
+  return atts.filter(function (a) { return a && !a.isInline; })
+             .map(function (a) { return a.name; });
+}
 
 /* ---------- Einstellungen / Token ---------- */
 
@@ -138,7 +150,8 @@ function loadItemDetails() {
   item.body.getAsync(Office.CoercionType.Text, function (res) {
     var el = document.getElementById("f-body");
     if (res.status === Office.AsyncResultStatus.Succeeded) {
-      el.textContent = res.value && res.value.trim() ? res.value : "(leerer Text)";
+      bodyText = res.value || "";
+      el.textContent = bodyText.trim() ? bodyText : "(leerer Text)";
     } else {
       el.textContent = "Text konnte nicht gelesen werden: " +
         (res.error && res.error.message ? res.error.message : "unbekannter Fehler");
@@ -197,19 +210,19 @@ function setupChoiceUi() {
 
 function updateSummary() {
   var textMode = document.getElementById("mode-text").checked;
-  var parts = ["Auswahl: " + (textMode ? "Text in Chatter" : "E-Mail (.eml) anhängen")];
+  var parts = ["Aktion: " + (textMode ? "Text in Chatter" : "E-Mail (.eml) anhängen")];
   if (textMode) {
     parts.push(document.getElementById("scope-last").checked ? "Nur letzte Nachricht" : "Ganzer Verlauf");
   }
   parts.push(selectedPartner ? ("Kontakt: " + selectedPartner.name) : "Kein Kontakt gewählt");
-  if (textMode) { parts.push("Text-Versand folgt (M5)"); }
   setText("selection-summary", parts.join(" · "));
 }
 
 function updateSendButton() {
+  var textMode = document.getElementById("mode-text").checked;
   var emlMode = document.getElementById("mode-eml").checked;
-  // In M4 ist nur der .eml-Versand aktiv; Text-Versand kommt in M5.
-  document.getElementById("btn-send").disabled = !(emlMode && emlSupported && selectedPartner);
+  var ok = !!selectedPartner && (textMode || (emlMode && emlSupported));
+  document.getElementById("btn-send").disabled = !ok;
 }
 
 /* ---------- Kontaktsuche (Relay -> Odoo) ---------- */
@@ -245,17 +258,12 @@ function doSearch(query) {
   }
   fetch(RELAY_BASE_URL + "/partners/search", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Client-Token": clientToken
-    },
+    headers: { "Content-Type": "application/json", "X-Client-Token": clientToken },
     body: JSON.stringify({ query: query })
   }).then(function (res) {
     if (res.status === 401) { throw new Error("401"); }
     if (!res.ok) {
-      return res.text().then(function (t) {
-        throw new Error("Relay " + res.status + ": " + t.slice(0, 200));
-      });
+      return res.text().then(function (t) { throw new Error("Relay " + res.status + ": " + t.slice(0, 200)); });
     }
     return res.json();
   }).then(function (data) {
@@ -316,8 +324,34 @@ function selectPartner(p) {
 function onSend() {
   if (document.getElementById("mode-eml").checked) {
     sendEml();
+  } else {
+    sendText();
   }
-  // Text-Versand: M5
+}
+
+function sendText() {
+  if (!selectedPartner) { return; }
+  var item = Office.context.mailbox.item;
+
+  document.getElementById("btn-send").disabled = true;
+  setSendResult("sending", "Wird an Odoo gesendet…");
+
+  var scope = document.getElementById("scope-last").checked ? "last" : "all";
+  var payload = {
+    partner_id: selectedPartner.id,
+    scope: scope,
+    body_text: bodyText || "",
+    meta: {
+      subject: item.subject || "",
+      sender: formatAddress(item.from),
+      to: joinAddresses(item.to),
+      cc: joinAddresses(item.cc),
+      date: item.dateTimeCreated ? new Date(item.dateTimeCreated).toLocaleString("de-DE") : ""
+    },
+    attachments: getAttachmentNames()
+  };
+
+  postToRelay("/chatter/note", payload);
 }
 
 function buildEmlFilename(item) {
@@ -346,43 +380,42 @@ function sendEml() {
       updateSendButton();
       return;
     }
-
     setSendResult("sending", "Wird an Odoo gesendet…");
-
-    fetch(RELAY_BASE_URL + "/chatter/eml", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Client-Token": clientToken
-      },
-      body: JSON.stringify({
-        partner_id: selectedPartner.id,
-        filename: buildEmlFilename(item),
-        eml_base64: fileRes.value,
-        subject: item.subject || ""
-      })
-    }).then(function (r) {
-      if (r.status === 401) { throw new Error("401"); }
-      if (!r.ok) {
-        return r.text().then(function (t) {
-          throw new Error("Relay " + r.status + ": " + t.slice(0, 300));
-        });
-      }
-      return r.json();
-    }).then(function (data) {
-      setSendResult("ok", "Erfolgreich gesendet ✓", data && data.partner_url);
-      updateSendButton();
-    }).catch(function (err) {
-      if (err.message === "401") {
-        setSendResult("error", "Zugriffs-Token ungültig – bitte in den Einstellungen prüfen.");
-        showSettings();
-      } else {
-        setSendResult("error", "Fehler beim Senden: " + err.message);
-      }
-      updateSendButton();
+    postToRelay("/chatter/eml", {
+      partner_id: selectedPartner.id,
+      filename: buildEmlFilename(item),
+      eml_base64: fileRes.value,
+      subject: item.subject || ""
     });
   });
 }
+
+function postToRelay(path, payload) {
+  fetch(RELAY_BASE_URL + path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Client-Token": clientToken },
+    body: JSON.stringify(payload)
+  }).then(function (r) {
+    if (r.status === 401) { throw new Error("401"); }
+    if (!r.ok) {
+      return r.text().then(function (t) { throw new Error("Relay " + r.status + ": " + t.slice(0, 300)); });
+    }
+    return r.json();
+  }).then(function (data) {
+    setSendResult("ok", "Erfolgreich gesendet ✓", data && data.partner_url);
+    updateSendButton();
+  }).catch(function (err) {
+    if (err.message === "401") {
+      setSendResult("error", "Zugriffs-Token ungültig – bitte in den Einstellungen prüfen.");
+      showSettings();
+    } else {
+      setSendResult("error", "Fehler beim Senden: " + err.message);
+    }
+    updateSendButton();
+  });
+}
+
+/* ---------- Sende-Ergebnis ---------- */
 
 function clearSendResult() {
   var el = document.getElementById("send-result");

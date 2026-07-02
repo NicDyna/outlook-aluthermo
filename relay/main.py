@@ -15,7 +15,7 @@ Configuration comes entirely from environment variables (set in Railway):
 
 import os
 import re
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException
@@ -119,6 +119,57 @@ def _html_escape(text: str) -> str:
     return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _nl2br(text: str) -> str:
+    """Text HTML-sicher machen und Zeilenumbrüche als <br/> darstellen (Text wird NIE verändert)."""
+    escaped = _html_escape((text or "").replace("\r\n", "\n").replace("\r", "\n"))
+    return escaped.replace("\n", "<br/>")
+
+
+# Marker, an denen der zitierte Verlauf üblicherweise beginnt (DE + EN). Reine Heuristik.
+_QUOTE_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [
+    r"^-{2,}\s*(Urspr[uü]ngliche Nachricht|Original Message)\s*-{2,}\s*$",
+    r"^_{5,}\s*$",
+    r"^Am\s.+\sschrieb.+:\s*$",
+    r"^On\s.+\swrote:\s*$",
+    r"^(Von|From):\s.+$",
+    r"^>.*$",
+]]
+
+
+def _extract_last_message(text: str) -> str:
+    """Schneidet den Text an der ersten erkannten Zitat-Grenze ab. Es wird nur GESCHNITTEN, nie umgeschrieben."""
+    if not text:
+        return text
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    cut = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and any(rx.match(stripped) for rx in _QUOTE_PATTERNS):
+            cut = i
+            break
+    if not cut:  # None oder 0 -> nichts Sinnvolles gefunden, ganzen Text behalten
+        return text
+    return "\n".join(lines[:cut]).rstrip()
+
+
+def _build_note_html(meta: "NoteMeta", body_text: str, attachments: List[str]) -> str:
+    parts = ["<p><b>E-Mail archiviert</b></p>"]
+    header = []
+    if meta.sender:  header.append("<b>Von:</b> " + _html_escape(meta.sender))
+    if meta.to:      header.append("<b>An:</b> " + _html_escape(meta.to))
+    if meta.cc:      header.append("<b>CC:</b> " + _html_escape(meta.cc))
+    if meta.date:    header.append("<b>Datum:</b> " + _html_escape(meta.date))
+    if meta.subject: header.append("<b>Betreff:</b> " + _html_escape(meta.subject))
+    if header:
+        parts.append("<p>" + "<br/>".join(header) + "</p>")
+    names = ", ".join(_html_escape(a) for a in (attachments or []) if a)
+    if names:
+        parts.append("<p><b>Anhänge:</b> " + names + "</p>")
+    parts.append("<hr/>")
+    parts.append("<div>" + _nl2br(body_text) + "</div>")
+    return "".join(parts)
+
+
 class PartnerSearch(BaseModel):
     query: str
 
@@ -128,6 +179,22 @@ class EmlAttach(BaseModel):
     filename: str
     eml_base64: str
     subject: str = ""
+
+
+class NoteMeta(BaseModel):
+    subject: str = ""
+    sender: str = ""
+    to: str = ""
+    cc: str = ""
+    date: str = ""
+
+
+class ChatterNote(BaseModel):
+    partner_id: int
+    scope: str = "all"          # "all" = ganzer Verlauf, "last" = nur letzte Nachricht
+    body_text: str = ""
+    meta: NoteMeta
+    attachments: List[str] = []
 
 
 @app.get("/health")
@@ -212,6 +279,34 @@ async def chatter_eml(
     return {
         "ok": True,
         "attachment_id": attachment_id,
+        "message_id": _extract_id(post_result),
+        "partner_url": f"{ODOO_BASE_URL}/web#id={body.partner_id}&model=res.partner&view_type=form",
+    }
+
+
+@app.post("/chatter/note")
+async def chatter_note(
+    body: ChatterNote,
+    x_client_token: Optional[str] = Header(default=None),
+):
+    """Postet eine saubere Text-Notiz (ohne KI) in die Chatter eines Kontakts."""
+    _check_token(x_client_token)
+
+    text = body.body_text or ""
+    if body.scope == "last":
+        text = _extract_last_message(text)
+
+    note_html = _build_note_html(body.meta, text, body.attachments)
+    post_result = await _odoo_call("res.partner", "message_post", {
+        "ids": [body.partner_id],
+        "body": note_html,
+        "body_is_html": True,
+        "message_type": "comment",
+        "subtype_xmlid": "mail.mt_note",
+    })
+
+    return {
+        "ok": True,
         "message_id": _extract_id(post_result),
         "partner_url": f"{ODOO_BASE_URL}/web#id={body.partner_id}&model=res.partner&view_type=form",
     }
