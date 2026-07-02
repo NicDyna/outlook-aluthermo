@@ -1,5 +1,6 @@
 :root {
   --brand: #714B67;   /* Odoo-Violett */
+  --brand-dark: #5a3c52;
   --ok: #107C10;
   --error: #A80000;
   --loading: #8A8886;
@@ -7,6 +8,7 @@
   --muted: #605E5C;
   --border: #EDEBE9;
   --bg: #FFFFFF;
+  --card: #FAF9F8;
 }
 
 * { box-sizing: border-box; }
@@ -29,6 +31,7 @@ body {
   color: var(--brand);
 }
 
+/* Status */
 .status {
   display: flex;
   align-items: center;
@@ -36,26 +39,129 @@ body {
   padding: 10px 12px;
   border-radius: 6px;
   border: 1px solid var(--border);
-  background: #FAF9F8;
+  background: var(--card);
   font-weight: 600;
 }
-
 .status__dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--loading);
-  flex: 0 0 auto;
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--loading); flex: 0 0 auto;
+}
+.status--ok        { border-color: #C6E7C6; background: #F1FAF1; color: var(--ok); }
+.status--ok .status__dot    { background: var(--ok); }
+.status--error     { border-color: #F3D6D6; background: #FDF3F4; color: var(--error); }
+.status--error .status__dot { background: var(--error); }
+
+/* Karten */
+.card {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.card__title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--brand);
+  margin: 0 0 10px;
 }
 
-.status--ok        { border-color: #C6E7C6; background: #F1FAF1; color: var(--ok); }
-.status--ok .status__dot   { background: var(--ok); }
-.status--error     { border-color: #F3D6D6; background: #FDF3F4; color: var(--error); }
-.status--error .status__dot{ background: var(--error); }
+/* Feldliste */
+.fields {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  margin: 0;
+}
+.fields dt { color: var(--muted); font-weight: 600; }
+.fields dd { margin: 0; word-break: break-word; }
 
-.hint {
-  margin-top: 16px;
-  color: var(--muted);
+/* Textvorschau */
+.bodybox { margin-top: 10px; }
+.bodybox summary {
+  cursor: pointer;
+  color: var(--brand);
+  font-weight: 600;
   font-size: 13px;
 }
-.hint p { margin: 0; }
+.bodybox__pre {
+  margin: 8px 0 0;
+  padding: 8px;
+  max-height: 180px;
+  overflow: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+  color: var(--text);
+}
+
+/* Optionen (Radios) */
+.opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  cursor: pointer;
+}
+.opt input { margin: 0; }
+.opt.is-disabled { color: var(--muted); cursor: not-allowed; }
+
+.scope {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.scope__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+
+/* Kontaktsuche (Platzhalter) */
+.search {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 14px;
+  background: var(--card);
+  color: var(--muted);
+}
+
+/* Aktionen */
+.actions { margin-top: 16px; }
+.btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  padding: 8px 14px;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn:hover { background: var(--card); }
+.btn--primary {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+  margin-right: 8px;
+}
+.btn--primary:hover:not(:disabled) { background: var(--brand-dark); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}

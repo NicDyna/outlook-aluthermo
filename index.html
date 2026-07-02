@@ -6,7 +6,7 @@
   <title>An Odoo senden</title>
 
   <!-- Cache-Busting: bei jedem Deploy die Versionsnummer (?v=) erhöhen -->
-  <link rel="stylesheet" href="styles.css?v=2026-07-02-1" />
+  <link rel="stylesheet" href="styles.css?v=2026-07-02-2" />
 
   <!-- Office.js muss von Microsofts CDN geladen werden -->
   <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
@@ -22,11 +22,60 @@
       <span id="status-text">Add-in wird geladen…</span>
     </section>
 
-    <section class="hint">
-      <p>Grundversion (M1). Die Auswahl <em>Text / .eml</em> und die Kontaktsuche folgen in den nächsten Schritten.</p>
+    <!-- E-Mail-Details (aus Outlook gelesen) -->
+    <section class="card">
+      <h2 class="card__title">E-Mail</h2>
+      <dl class="fields">
+        <dt>Betreff</dt><dd id="f-subject">—</dd>
+        <dt>Von</dt><dd id="f-from">—</dd>
+        <dt>An</dt><dd id="f-to">—</dd>
+        <dt>CC</dt><dd id="f-cc">—</dd>
+        <dt>Datum</dt><dd id="f-date">—</dd>
+      </dl>
+      <details class="bodybox">
+        <summary>Textvorschau anzeigen</summary>
+        <pre id="f-body" class="bodybox__pre">…</pre>
+      </details>
+    </section>
+
+    <!-- Auswahl: wie in Odoo speichern -->
+    <section class="card">
+      <h2 class="card__title">Wie in Odoo speichern?</h2>
+      <label class="opt">
+        <input type="radio" name="mode" id="mode-text" value="text" checked />
+        Nur Text in Chatter
+      </label>
+      <label class="opt" id="mode-eml-label">
+        <input type="radio" name="mode" id="mode-eml" value="eml" />
+        Komplette E-Mail (.eml) anhängen
+      </label>
+
+      <div id="scope-options" class="scope">
+        <div class="scope__title">Umfang des Textes</div>
+        <label class="opt">
+          <input type="radio" name="scope" id="scope-last" value="last" checked />
+          Nur letzte Nachricht
+        </label>
+        <label class="opt">
+          <input type="radio" name="scope" id="scope-all" value="all" />
+          Ganzer Verlauf
+        </label>
+      </div>
+    </section>
+
+    <!-- Kontakt (Suche folgt in M3) -->
+    <section class="card">
+      <h2 class="card__title">Kontakt</h2>
+      <input class="search" type="text" placeholder="Kontaktsuche folgt in M3…" disabled />
+    </section>
+
+    <section class="actions">
+      <button id="btn-send" class="btn btn--primary" disabled>Überprüfen &amp; senden</button>
+      <button id="btn-cancel" class="btn">Zurücksetzen</button>
+      <p class="note" id="selection-summary"></p>
     </section>
   </main>
 
-  <script src="taskpane.js?v=2026-07-02-1"></script>
+  <script src="taskpane.js?v=2026-07-02-2"></script>
 </body>
 </html>
