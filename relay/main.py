@@ -152,7 +152,55 @@ def _extract_last_message(text: str) -> str:
     return "\n".join(lines[:cut]).rstrip()
 
 
-def _build_note_html(meta: "NoteMeta", body_text: str, attachments: List[str]) -> str:
+# --- Ganzer Verlauf: Trenner zwischen den einzelnen Nachrichten einfügen ---
+
+# Kopfzeilen eines zitierten Nachrichtenkopfs (Outlook/Gmail, DE + EN)
+_HEADER_FIELD = re.compile(
+    r"^(Von|Gesendet|An|Betreff|CC|Cc|From|Sent|To|Subject|Date|Datum|Reply-To|Antwort an):",
+    re.IGNORECASE,
+)
+
+# "Harte" Nachrichtengrenzen (nicht die einzelnen >-Zeilen)
+_HARD_BOUNDARY = [re.compile(p, re.IGNORECASE) for p in [
+    r"^-{2,}\s*(Urspr[uü]ngliche Nachricht|Original Message)\s*-{2,}\s*$",
+    r"^_{5,}\s*$",
+    r"^Am\s.+\sschrieb.+:\s*$",
+    r"^On\s.+\swrote:\s*$",
+]]
+
+_DIVIDER = "──────────── vorherige Nachricht ────────────"
+
+
+def _format_thread_html(text: str) -> str:
+    """Fügt vor jeder erkannten Nachrichtengrenze einen sichtbaren Trenner ein.
+    Der eigentliche Text wird dabei nur escaped, nie verändert."""
+    lines = (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    out: List[str] = []
+    armed = True       # bereit, die nächste Grenze zu erkennen
+    in_quote = False
+    for line in lines:
+        stripped = line.strip()
+        is_quote = stripped.startswith(">")
+        is_hard = any(rx.match(stripped) for rx in _HARD_BOUNDARY)
+        is_header = bool(_HEADER_FIELD.match(stripped))
+
+        if armed and out and (is_hard or is_header or (is_quote and not in_quote)):
+            out.append("")
+            out.append(_DIVIDER)
+            out.append("")
+            armed = False
+
+        out.append(_html_escape(line))
+
+        # Erst wieder "scharf" schalten, sobald echter Nachrichtentext folgt
+        if stripped and not is_quote and not is_hard and not is_header:
+            armed = True
+        in_quote = is_quote
+
+    return "<br/>".join(out)
+
+
+def _build_note_html(meta: "NoteMeta", body_html: str, attachments: List[str]) -> str:
     parts = ["<p><b>E-Mail archiviert</b></p>"]
     header = []
     if meta.sender:  header.append("<b>Von:</b> " + _html_escape(meta.sender))
@@ -166,7 +214,7 @@ def _build_note_html(meta: "NoteMeta", body_text: str, attachments: List[str]) -
     if names:
         parts.append("<p><b>Anhänge:</b> " + names + "</p>")
     parts.append("<hr/>")
-    parts.append("<div>" + _nl2br(body_text) + "</div>")
+    parts.append("<div>" + body_html + "</div>")
     return "".join(parts)
 
 
@@ -294,9 +342,11 @@ async def chatter_note(
 
     text = body.body_text or ""
     if body.scope == "last":
-        text = _extract_last_message(text)
+        body_html = _nl2br(_extract_last_message(text))
+    else:
+        body_html = _format_thread_html(text)
 
-    note_html = _build_note_html(body.meta, text, body.attachments)
+    note_html = _build_note_html(body.meta, body_html, body.attachments)
     post_result = await _odoo_call("res.partner", "message_post", {
         "ids": [body.partner_id],
         "body": note_html,
