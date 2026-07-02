@@ -165,3 +165,54 @@ body {
   color: var(--muted);
   font-size: 12px;
 }
+
+/* Kontaktsuche: Status + Ergebnisliste */
+.results-status {
+  margin: 6px 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.results:empty { display: none; }
+.results__item {
+  padding: 8px 10px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+.results__item:last-child { border-bottom: none; }
+.results__item:hover { background: #F3EEF2; }
+.results__name { font-weight: 600; }
+.results__meta { font-size: 12px; color: var(--muted); word-break: break-word; }
+
+/* Ausgewählter Kontakt */
+.selected {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #C6E7C6;
+  background: #F1FAF1;
+  border-radius: 4px;
+}
+.selected__name { font-weight: 600; }
+.selected__meta { font-size: 12px; color: var(--muted); word-break: break-word; }
+.linkbtn {
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--brand);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px;
+  flex: 0 0 auto;
+}
+.linkbtn:hover { text-decoration: underline; }

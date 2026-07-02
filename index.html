@@ -6,7 +6,7 @@
   <title>An Odoo senden</title>
 
   <!-- Cache-Busting: bei jedem Deploy die Versionsnummer (?v=) erhöhen -->
-  <link rel="stylesheet" href="styles.css?v=2026-07-02-2" />
+  <link rel="stylesheet" href="styles.css?v=2026-07-02-3" />
 
   <!-- Office.js muss von Microsofts CDN geladen werden -->
   <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
@@ -63,10 +63,24 @@
       </div>
     </section>
 
-    <!-- Kontakt (Suche folgt in M3) -->
+    <!-- Kontakt suchen (über das Relay -> Odoo) -->
     <section class="card">
       <h2 class="card__title">Kontakt</h2>
-      <input class="search" type="text" placeholder="Kontaktsuche folgt in M3…" disabled />
+
+      <div id="contact-picker">
+        <input class="search" id="contact-search" type="text" autocomplete="off"
+               placeholder="Kontakt suchen (Name oder E-Mail)…" />
+        <div id="contact-status" class="results-status"></div>
+        <ul id="contact-results" class="results"></ul>
+      </div>
+
+      <div id="contact-selected" class="selected" style="display:none">
+        <div class="selected__info">
+          <div class="selected__name" id="sel-name"></div>
+          <div class="selected__meta" id="sel-meta"></div>
+        </div>
+        <button type="button" class="linkbtn" id="sel-change">Ändern</button>
+      </div>
     </section>
 
     <section class="actions">
@@ -76,6 +90,6 @@
     </section>
   </main>
 
-  <script src="taskpane.js?v=2026-07-02-2"></script>
+  <script src="taskpane.js?v=2026-07-02-3"></script>
 </body>
 </html>
