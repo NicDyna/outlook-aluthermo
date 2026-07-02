@@ -203,6 +203,7 @@ async def chatter_eml(
     post_result = await _odoo_call("res.partner", "message_post", {
         "ids": [body.partner_id],
         "body": note_body,
+        "body_is_html": True,  # sonst behandelt Odoo den String als Text und zeigt HTML-Tags wörtlich
         "message_type": "comment",
         "subtype_xmlid": "mail.mt_note",
         "attachment_ids": [attachment_id],
