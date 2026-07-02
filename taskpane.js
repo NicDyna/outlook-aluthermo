@@ -1,16 +1,16 @@
 /* "An Odoo senden" – Taskpane
  *
- * M3: Kontaktsuche über das Railway-Relay -> Odoo.
- * Zeigt weiterhin die E-Mail-Details und die Auswahl (Text/.eml, Umfang).
- * Senden (Text posten / .eml anhängen) folgt in M4/M5.
+ * M3 + Sicherheits-Gate: Kontaktsuche über das Railway-Relay -> Odoo.
+ * Der Zugriffs-Token steht NICHT mehr im Code, sondern wird einmalig
+ * eingegeben und in den roamingSettings des Postfachs gespeichert.
+ * Der Odoo-API-Key liegt weiterhin ausschließlich auf Railway.
  */
 
-/* ---------- Konfiguration ----------
- * RELAY_BASE_URL und CLIENT_TOKEN stehen bewusst im (öffentlichen) Add-in-Code.
- * Der eigentliche Odoo-API-Key liegt NUR auf Railway. */
-var RELAY_BASE_URL = "https://aluthermo.up.railway.app";
-var CLIENT_TOKEN = "8057321c89d14a9b97df7500505955eabe68fcab22234985ba2ac3f4192e09c9";
+/* ---------- Konfiguration ---------- */
+var RELAY_BASE_URL = "https://aluthermo.up.railway.app";  // nicht geheim
+var TOKEN_KEY = "clientToken";
 
+var clientToken = "";
 var selectedPartner = null;
 var searchTimer = null;
 
@@ -20,9 +20,21 @@ Office.onReady(function (info) {
     return;
   }
   setStatus("ok", "Add-in bereit ✓");
-  loadItem();
+
+  clientToken = Office.context.roamingSettings.get(TOKEN_KEY) || "";
+
+  setupSettingsUi();
   setupChoiceUi();
   setupContactSearch();
+  loadItemDetails();
+
+  if (clientToken) {
+    showMainFlow();
+    autoSearchSender();
+  } else {
+    setText("settings-hint", "Bitte einmalig den Zugriffs-Token eingeben, um Kontakte zu suchen.");
+    showSettings();
+  }
 });
 
 /* ---------- Helfer ---------- */
@@ -53,17 +65,66 @@ function formatList(arr) {
   return arr.map(formatAddress).join(", ");
 }
 
-function metaOf(p) {
-  return [p.email, p.company].filter(Boolean).join(" · ") || "—";
+function metaOf(p) { return [p.email, p.company].filter(Boolean).join(" · ") || "—"; }
+function nameOf(p) { return p.name + (p.is_company ? " (Firma)" : ""); }
+
+/* ---------- Einstellungen / Token ---------- */
+
+function setupSettingsUi() {
+  document.getElementById("btn-settings").addEventListener("click", function () {
+    showSettings();
+  });
+
+  document.getElementById("settings-show").addEventListener("change", function (e) {
+    document.getElementById("settings-token").type = e.target.checked ? "text" : "password";
+  });
+
+  document.getElementById("settings-save").addEventListener("click", saveToken);
+
+  document.getElementById("settings-cancel").addEventListener("click", function () {
+    if (clientToken) {
+      showMainFlow();
+    } else {
+      setText("settings-status", "Ohne Token kann das Add-in keine Kontakte suchen.");
+    }
+  });
 }
 
-function nameOf(p) {
-  return p.name + (p.is_company ? " (Firma)" : "");
+function showSettings() {
+  document.getElementById("settings").style.display = "block";
+  document.getElementById("main-flow").style.display = "none";
+  document.getElementById("settings-token").value = clientToken || "";
+  setText("settings-status", "");
+}
+
+function showMainFlow() {
+  document.getElementById("settings").style.display = "none";
+  document.getElementById("main-flow").style.display = "block";
+}
+
+function saveToken() {
+  var value = (document.getElementById("settings-token").value || "").trim();
+  if (!value) {
+    setText("settings-status", "Bitte einen Token eingeben.");
+    return;
+  }
+  Office.context.roamingSettings.set(TOKEN_KEY, value);
+  Office.context.roamingSettings.saveAsync(function (res) {
+    if (res.status === Office.AsyncResultStatus.Succeeded) {
+      clientToken = value;
+      setText("settings-status", "");
+      showMainFlow();
+      autoSearchSender();
+    } else {
+      setText("settings-status", "Speichern fehlgeschlagen: " +
+        (res.error && res.error.message ? res.error.message : "unbekannter Fehler"));
+    }
+  });
 }
 
 /* ---------- E-Mail einlesen ---------- */
 
-function loadItem() {
+function loadItemDetails() {
   var item = Office.context.mailbox.item;
 
   setText("f-subject", item.subject || "(kein Betreff)");
@@ -83,8 +144,10 @@ function loadItem() {
         (res.error && res.error.message ? res.error.message : "unbekannter Fehler");
     }
   });
+}
 
-  // Absender als Startsuche vorbelegen
+function autoSearchSender() {
+  var item = Office.context.mailbox.item;
   var fromEmail = item.from && item.from.emailAddress;
   if (fromEmail) {
     document.getElementById("contact-search").value = fromEmail;
@@ -160,19 +223,23 @@ function setupContactSearch() {
   });
 }
 
-function setResultsStatus(msg) {
-  setText("contact-status", msg);
-}
+function setResultsStatus(msg) { setText("contact-status", msg); }
 
 function doSearch(query) {
+  if (!clientToken) {
+    setResultsStatus("Bitte zuerst den Zugriffs-Token in den Einstellungen eingeben.");
+    showSettings();
+    return;
+  }
   fetch(RELAY_BASE_URL + "/partners/search", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Client-Token": CLIENT_TOKEN
+      "X-Client-Token": clientToken
     },
     body: JSON.stringify({ query: query })
   }).then(function (res) {
+    if (res.status === 401) { throw new Error("401"); }
     if (!res.ok) {
       return res.text().then(function (t) {
         throw new Error("Relay " + res.status + ": " + t.slice(0, 200));
@@ -183,7 +250,12 @@ function doSearch(query) {
     renderResults((data && data.partners) || []);
   }).catch(function (err) {
     renderResults([]);
-    setResultsStatus("Fehler bei der Suche: " + err.message);
+    if (err.message === "401") {
+      setResultsStatus("Zugriffs-Token ungültig – bitte in den Einstellungen prüfen.");
+      showSettings();
+    } else {
+      setResultsStatus("Fehler bei der Suche: " + err.message);
+    }
   });
 }
 

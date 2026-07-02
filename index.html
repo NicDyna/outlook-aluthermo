@@ -6,7 +6,7 @@
   <title>An Odoo senden</title>
 
   <!-- Cache-Busting: bei jedem Deploy die Versionsnummer (?v=) erhöhen -->
-  <link rel="stylesheet" href="styles.css?v=2026-07-02-3" />
+  <link rel="stylesheet" href="styles.css?v=2026-07-02-4" />
 
   <!-- Office.js muss von Microsofts CDN geladen werden -->
   <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
@@ -15,6 +15,7 @@
   <main class="pane">
     <header class="pane__header">
       <h1>An Odoo senden</h1>
+      <button id="btn-settings" class="linkbtn" type="button">⚙ Einstellungen</button>
     </header>
 
     <section id="status" class="status status--loading">
@@ -22,74 +23,93 @@
       <span id="status-text">Add-in wird geladen…</span>
     </section>
 
-    <!-- E-Mail-Details (aus Outlook gelesen) -->
-    <section class="card">
-      <h2 class="card__title">E-Mail</h2>
-      <dl class="fields">
-        <dt>Betreff</dt><dd id="f-subject">—</dd>
-        <dt>Von</dt><dd id="f-from">—</dd>
-        <dt>An</dt><dd id="f-to">—</dd>
-        <dt>CC</dt><dd id="f-cc">—</dd>
-        <dt>Datum</dt><dd id="f-date">—</dd>
-      </dl>
-      <details class="bodybox">
-        <summary>Textvorschau anzeigen</summary>
-        <pre id="f-body" class="bodybox__pre">…</pre>
-      </details>
+    <!-- Einstellungen (Zugriffs-Token) -->
+    <section id="settings" class="card" style="display:none">
+      <h2 class="card__title">Einstellungen</h2>
+      <p class="note" id="settings-hint">Einmalig den Zugriffs-Token für das Relay eingeben.</p>
+      <label class="settings__label" for="settings-token">Zugriffs-Token</label>
+      <input class="search" id="settings-token" type="password" autocomplete="off" placeholder="Token einfügen…" />
+      <label class="opt" style="margin-top:4px">
+        <input type="checkbox" id="settings-show" /> Token anzeigen
+      </label>
+      <div class="actions">
+        <button id="settings-save" class="btn btn--primary" type="button">Speichern</button>
+        <button id="settings-cancel" class="btn" type="button">Abbrechen</button>
+      </div>
+      <p class="note" id="settings-status"></p>
     </section>
 
-    <!-- Auswahl: wie in Odoo speichern -->
-    <section class="card">
-      <h2 class="card__title">Wie in Odoo speichern?</h2>
-      <label class="opt">
-        <input type="radio" name="mode" id="mode-text" value="text" checked />
-        Nur Text in Chatter
-      </label>
-      <label class="opt" id="mode-eml-label">
-        <input type="radio" name="mode" id="mode-eml" value="eml" />
-        Komplette E-Mail (.eml) anhängen
-      </label>
+    <!-- Hauptablauf -->
+    <div id="main-flow">
+      <!-- E-Mail-Details (aus Outlook gelesen) -->
+      <section class="card">
+        <h2 class="card__title">E-Mail</h2>
+        <dl class="fields">
+          <dt>Betreff</dt><dd id="f-subject">—</dd>
+          <dt>Von</dt><dd id="f-from">—</dd>
+          <dt>An</dt><dd id="f-to">—</dd>
+          <dt>CC</dt><dd id="f-cc">—</dd>
+          <dt>Datum</dt><dd id="f-date">—</dd>
+        </dl>
+        <details class="bodybox">
+          <summary>Textvorschau anzeigen</summary>
+          <pre id="f-body" class="bodybox__pre">…</pre>
+        </details>
+      </section>
 
-      <div id="scope-options" class="scope">
-        <div class="scope__title">Umfang des Textes</div>
+      <!-- Auswahl: wie in Odoo speichern -->
+      <section class="card">
+        <h2 class="card__title">Wie in Odoo speichern?</h2>
         <label class="opt">
-          <input type="radio" name="scope" id="scope-last" value="last" checked />
-          Nur letzte Nachricht
+          <input type="radio" name="mode" id="mode-text" value="text" checked />
+          Nur Text in Chatter
         </label>
-        <label class="opt">
-          <input type="radio" name="scope" id="scope-all" value="all" />
-          Ganzer Verlauf
+        <label class="opt" id="mode-eml-label">
+          <input type="radio" name="mode" id="mode-eml" value="eml" />
+          Komplette E-Mail (.eml) anhängen
         </label>
-      </div>
-    </section>
 
-    <!-- Kontakt suchen (über das Relay -> Odoo) -->
-    <section class="card">
-      <h2 class="card__title">Kontakt</h2>
-
-      <div id="contact-picker">
-        <input class="search" id="contact-search" type="text" autocomplete="off"
-               placeholder="Kontakt suchen (Name oder E-Mail)…" />
-        <div id="contact-status" class="results-status"></div>
-        <ul id="contact-results" class="results"></ul>
-      </div>
-
-      <div id="contact-selected" class="selected" style="display:none">
-        <div class="selected__info">
-          <div class="selected__name" id="sel-name"></div>
-          <div class="selected__meta" id="sel-meta"></div>
+        <div id="scope-options" class="scope">
+          <div class="scope__title">Umfang des Textes</div>
+          <label class="opt">
+            <input type="radio" name="scope" id="scope-last" value="last" checked />
+            Nur letzte Nachricht
+          </label>
+          <label class="opt">
+            <input type="radio" name="scope" id="scope-all" value="all" />
+            Ganzer Verlauf
+          </label>
         </div>
-        <button type="button" class="linkbtn" id="sel-change">Ändern</button>
-      </div>
-    </section>
+      </section>
 
-    <section class="actions">
-      <button id="btn-send" class="btn btn--primary" disabled>Überprüfen &amp; senden</button>
-      <button id="btn-cancel" class="btn">Zurücksetzen</button>
-      <p class="note" id="selection-summary"></p>
-    </section>
+      <!-- Kontakt suchen (über das Relay -> Odoo) -->
+      <section class="card">
+        <h2 class="card__title">Kontakt</h2>
+
+        <div id="contact-picker">
+          <input class="search" id="contact-search" type="text" autocomplete="off"
+                 placeholder="Kontakt suchen (Name oder E-Mail)…" />
+          <div id="contact-status" class="results-status"></div>
+          <ul id="contact-results" class="results"></ul>
+        </div>
+
+        <div id="contact-selected" class="selected" style="display:none">
+          <div class="selected__info">
+            <div class="selected__name" id="sel-name"></div>
+            <div class="selected__meta" id="sel-meta"></div>
+          </div>
+          <button type="button" class="linkbtn" id="sel-change">Ändern</button>
+        </div>
+      </section>
+
+      <section class="actions">
+        <button id="btn-send" class="btn btn--primary" disabled>Überprüfen &amp; senden</button>
+        <button id="btn-cancel" class="btn">Zurücksetzen</button>
+        <p class="note" id="selection-summary"></p>
+      </section>
+    </div>
   </main>
 
-  <script src="taskpane.js?v=2026-07-02-3"></script>
+  <script src="taskpane.js?v=2026-07-02-4"></script>
 </body>
 </html>

@@ -24,11 +24,26 @@ body {
 
 .pane { padding: 16px; }
 
+.pane__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
 .pane__header h1 {
   font-size: 18px;
   font-weight: 600;
-  margin: 0 0 12px;
+  margin: 0;
   color: var(--brand);
+}
+
+.settings__label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 4px 0;
 }
 
 /* Status */
