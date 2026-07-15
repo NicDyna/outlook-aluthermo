@@ -4,6 +4,9 @@
  * Text-Notiz = Kopf (aus Outlook-Daten) + Nachrichtentext; optional nur die
  * letzte Nachricht (regelbasierter Schnitt im Relay, keine KI).
  * Der Text wird dabei nur geschnitten/escaped, niemals umgeschrieben.
+ *
+ * M6: Ziel wählbar – Kontakt, Projekt→Aufgabe, Verkaufsauftrag, ToDo
+ * oder Verkaufschance. Bei Aufgaben erst Projekt, dann Aufgabe wählen.
  */
 
 /* ---------- Konfiguration ---------- */
@@ -11,10 +14,28 @@ var RELAY_BASE_URL = "https://aluthermo.up.railway.app";  // nicht geheim
 var TOKEN_KEY = "clientToken";
 
 var clientToken = "";
-var selectedPartner = null;
+var targetType = "contact";      // contact | task | sale_order | todo | opportunity
+var selectedProject = null;      // nur bei targetType === "task"
+var selectedTarget = null;       // der Datensatz, in dessen Chatter geschrieben wird
 var searchTimer = null;
+var projectSearchTimer = null;
 var emlSupported = false;
 var bodyText = "";
+
+/* Eigenschaften je Zieltyp: Odoo-Modell, Beschriftung, Suchfeld-Platzhalter,
+ * minQuery = ab wie vielen Zeichen gesucht wird (0 = Liste erscheint sofort). */
+var TARGET_TYPES = {
+  contact:     { model: "res.partner",  label: "Kontakt",
+                 placeholder: "Kontakt suchen (Name oder E-Mail)…", minQuery: 2 },
+  task:        { model: "project.task", label: "Aufgabe",
+                 placeholder: "Aufgabe suchen…", minQuery: 0 },
+  sale_order:  { model: "sale.order",   label: "Verkaufsauftrag",
+                 placeholder: "Auftrag suchen (Nummer oder Kunde)…", minQuery: 2 },
+  todo:        { model: "project.task", label: "ToDo",
+                 placeholder: "ToDo suchen…", minQuery: 0 },
+  opportunity: { model: "crm.lead",     label: "Verkaufschance",
+                 placeholder: "Chance suchen (Name oder Kunde)…", minQuery: 2 }
+};
 
 Office.onReady(function (info) {
   if (!(info && info.host === Office.HostType.Outlook)) {
@@ -27,12 +48,12 @@ Office.onReady(function (info) {
 
   setupSettingsUi();
   setupChoiceUi();
-  setupContactSearch();
+  setupTargetUi();
   loadItemDetails();
 
   if (clientToken) {
     showMainFlow();
-    autoSearchSender();
+    // Die Absender-Suche stößt applyTargetType() (in setupTargetUi) bereits an.
   } else {
     setText("settings-hint", "Bitte einmalig den Zugriffs-Token eingeben, um Kontakte zu suchen.");
     showSettings();
@@ -70,9 +91,6 @@ function formatList(arr) {
 function joinAddresses(arr) {
   return (arr || []).map(formatAddress).join(", ");
 }
-
-function metaOf(p) { return [p.email, p.company].filter(Boolean).join(" · ") || "—"; }
-function nameOf(p) { return p.name + (p.is_company ? " (Firma)" : ""); }
 
 function getAttachmentNames() {
   var atts = Office.context.mailbox.item.attachments || [];
@@ -126,7 +144,7 @@ function saveToken() {
       clientToken = value;
       setText("settings-status", "");
       showMainFlow();
-      autoSearchSender();
+      applyTargetType();
     } else {
       setText("settings-status", "Speichern fehlgeschlagen: " +
         (res.error && res.error.message ? res.error.message : "unbekannter Fehler"));
@@ -160,11 +178,12 @@ function loadItemDetails() {
 }
 
 function autoSearchSender() {
+  if (targetType !== "contact") { return; }
   var item = Office.context.mailbox.item;
   var fromEmail = item.from && item.from.emailAddress;
   if (fromEmail) {
-    document.getElementById("contact-search").value = fromEmail;
-    doSearch(fromEmail);
+    document.getElementById("target-search").value = fromEmail;
+    doTargetSearch(fromEmail);
   }
 }
 
@@ -210,56 +229,145 @@ function setupChoiceUi() {
 
 function updateSummary() {
   var textMode = document.getElementById("mode-text").checked;
+  var cfg = TARGET_TYPES[targetType];
   var parts = ["Aktion: " + (textMode ? "Text in Chatter" : "E-Mail (.eml) anhängen")];
   if (textMode) {
     parts.push(document.getElementById("scope-last").checked ? "Nur letzte Nachricht" : "Ganzer Verlauf");
   }
-  parts.push(selectedPartner ? ("Kontakt: " + selectedPartner.name) : "Kein Kontakt gewählt");
+  if (selectedTarget) {
+    var label = cfg.label + ": " + selectedTarget.name;
+    if (targetType === "task" && selectedProject) {
+      label = "Projekt: " + selectedProject.name + " · " + label;
+    }
+    parts.push(label);
+  } else {
+    parts.push("Kein Ziel gewählt (" + cfg.label + ")");
+  }
   setText("selection-summary", parts.join(" · "));
 }
 
 function updateSendButton() {
   var textMode = document.getElementById("mode-text").checked;
   var emlMode = document.getElementById("mode-eml").checked;
-  var ok = !!selectedPartner && (textMode || (emlMode && emlSupported));
+  var ok = !!selectedTarget && (textMode || (emlMode && emlSupported));
   document.getElementById("btn-send").disabled = !ok;
 }
 
-/* ---------- Kontaktsuche (Relay -> Odoo) ---------- */
+/* ---------- Zielsuche (Relay -> Odoo) ---------- */
 
-function setupContactSearch() {
-  var input = document.getElementById("contact-search");
+function setupTargetUi() {
+  var typeSelect = document.getElementById("target-type");
+  var targetInput = document.getElementById("target-search");
+  var projectInput = document.getElementById("project-search");
 
-  input.addEventListener("input", function () {
+  typeSelect.addEventListener("change", function () {
+    targetType = typeSelect.value;
+    resetProject();
+    resetTarget();
+    applyTargetType();
+  });
+
+  targetInput.addEventListener("input", function () {
     clearTimeout(searchTimer);
-    var q = input.value.trim();
-    if (q.length < 2) { renderResults([]); setResultsStatus(""); return; }
-    setResultsStatus("Suche…");
-    searchTimer = setTimeout(function () { doSearch(q); }, 350);
+    var q = targetInput.value.trim();
+    var min = TARGET_TYPES[targetType].minQuery;
+    if (q.length < min) {
+      document.getElementById("target-results").innerHTML = "";
+      setTargetStatus("");
+      return;
+    }
+    setTargetStatus("Suche…");
+    searchTimer = setTimeout(function () { doTargetSearch(q); }, 350);
+  });
+
+  projectInput.addEventListener("input", function () {
+    clearTimeout(projectSearchTimer);
+    var q = projectInput.value.trim();
+    setProjectStatus("Suche…");
+    projectSearchTimer = setTimeout(function () { doProjectSearch(q); }, 350);
   });
 
   document.getElementById("sel-change").addEventListener("click", function () {
-    selectedPartner = null;
-    document.getElementById("contact-selected").style.display = "none";
-    document.getElementById("contact-picker").style.display = "block";
+    resetTarget();
     clearSendResult();
     updateSummary();
     updateSendButton();
+    if (TARGET_TYPES[targetType].minQuery === 0 && (targetType !== "task" || selectedProject)) {
+      doTargetSearch(document.getElementById("target-search").value.trim());
+    }
   });
+
+  document.getElementById("project-sel-change").addEventListener("click", function () {
+    resetProject();
+    resetTarget();
+    clearSendResult();
+    updateSummary();
+    updateSendButton();
+    doProjectSearch(document.getElementById("project-search").value.trim());
+  });
+
+  applyTargetType();
 }
 
-function setResultsStatus(msg) { setText("contact-status", msg); }
+/* Oberfläche an den gewählten Zieltyp anpassen */
+function applyTargetType() {
+  var cfg = TARGET_TYPES[targetType];
+  var isTask = targetType === "task";
 
-function doSearch(query) {
+  document.getElementById("project-step").style.display = isTask ? "block" : "none";
+  setText("target-label", cfg.label);
+  document.getElementById("target-search").placeholder = cfg.placeholder;
+
+  // Bei "Aufgabe" erst nach Projektwahl den Aufgaben-Bereich zeigen
+  document.getElementById("target-area").style.display = (isTask && !selectedProject) ? "none" : "block";
+
+  clearSendResult();
+  updateSummary();
+  updateSendButton();
+
+  if (targetType === "contact") {
+    autoSearchSender();
+  } else if (targetType === "todo") {
+    doTargetSearch("");            // ToDos sofort auflisten
+  } else if (isTask) {
+    doProjectSearch("");           // Projekte sofort auflisten
+  }
+}
+
+function resetTarget() {
+  selectedTarget = null;
+  document.getElementById("target-selected").style.display = "none";
+  document.getElementById("target-picker").style.display = "block";
+  document.getElementById("target-search").value = "";
+  renderList("target-results", "target-status", [], selectTarget);
+  setTargetStatus("");
+}
+
+function resetProject() {
+  selectedProject = null;
+  document.getElementById("project-selected").style.display = "none";
+  document.getElementById("project-picker").style.display = "block";
+  document.getElementById("project-search").value = "";
+  renderList("project-results", "project-status", [], selectProject);
+  setProjectStatus("");
+  if (targetType === "task") {
+    document.getElementById("target-area").style.display = "none";
+  }
+}
+
+function setTargetStatus(msg) { setText("target-status", msg); }
+function setProjectStatus(msg) { setText("project-status", msg); }
+
+function searchRelay(payload, onDone, onStatus) {
   if (!clientToken) {
-    setResultsStatus("Bitte zuerst den Zugriffs-Token in den Einstellungen eingeben.");
+    onStatus("Bitte zuerst den Zugriffs-Token in den Einstellungen eingeben.");
     showSettings();
     return;
   }
-  fetch(RELAY_BASE_URL + "/partners/search", {
+  fetch(RELAY_BASE_URL + "/targets/search", {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Client-Token": clientToken },
-    body: JSON.stringify({ query: query })
+    body: JSON.stringify(payload)
   }).then(function (res) {
     if (res.status === 401) { throw new Error("401"); }
     if (!res.ok) {
@@ -267,53 +375,84 @@ function doSearch(query) {
     }
     return res.json();
   }).then(function (data) {
-    renderResults((data && data.partners) || []);
+    onDone((data && data.results) || []);
   }).catch(function (err) {
-    renderResults([]);
+    onDone(null);
     if (err.message === "401") {
-      setResultsStatus("Zugriffs-Token ungültig – bitte in den Einstellungen prüfen.");
+      onStatus("Zugriffs-Token ungültig – bitte in den Einstellungen prüfen.");
       showSettings();
     } else {
-      setResultsStatus("Fehler bei der Suche: " + err.message);
+      onStatus("Fehler bei der Suche: " + err.message);
     }
   });
 }
 
-function renderResults(list) {
-  var ul = document.getElementById("contact-results");
+function doTargetSearch(query) {
+  var payload = { type: targetType, query: query || "" };
+  if (targetType === "task") {
+    if (!selectedProject) { return; }
+    payload.project_id = selectedProject.id;
+  }
+  searchRelay(payload, function (results) {
+    if (results) { renderList("target-results", "target-status", results, selectTarget); }
+  }, setTargetStatus);
+}
+
+function doProjectSearch(query) {
+  searchRelay({ type: "project", query: query || "" }, function (results) {
+    if (results) { renderList("project-results", "project-status", results, selectProject); }
+  }, setProjectStatus);
+}
+
+function renderList(ulId, statusId, list, onPick) {
+  var ul = document.getElementById(ulId);
   ul.innerHTML = "";
   if (!list.length) {
-    if (!document.getElementById("contact-status").textContent) {
-      setResultsStatus("Keine Treffer");
+    if (!document.getElementById(statusId).textContent) {
+      setText(statusId, "Keine Treffer");
     }
     return;
   }
-  setResultsStatus(list.length + " Treffer");
-  list.forEach(function (p) {
+  setText(statusId, list.length + " Treffer");
+  list.forEach(function (r) {
     var li = document.createElement("li");
     li.className = "results__item";
 
     var nameDiv = document.createElement("div");
     nameDiv.className = "results__name";
-    nameDiv.textContent = nameOf(p);
+    nameDiv.textContent = r.name;
 
     var metaDiv = document.createElement("div");
     metaDiv.className = "results__meta";
-    metaDiv.textContent = metaOf(p);
+    metaDiv.textContent = r.meta || "—";
 
     li.appendChild(nameDiv);
     li.appendChild(metaDiv);
-    li.addEventListener("click", function () { selectPartner(p); });
+    li.addEventListener("click", function () { onPick(r); });
     ul.appendChild(li);
   });
 }
 
-function selectPartner(p) {
-  selectedPartner = p;
-  document.getElementById("contact-picker").style.display = "none";
-  document.getElementById("contact-selected").style.display = "flex";
-  setText("sel-name", nameOf(p));
-  setText("sel-meta", metaOf(p));
+function selectProject(p) {
+  selectedProject = p;
+  document.getElementById("project-picker").style.display = "none";
+  document.getElementById("project-selected").style.display = "flex";
+  setText("project-sel-name", p.name);
+  setText("project-sel-meta", p.meta || "—");
+  document.getElementById("target-area").style.display = "block";
+  resetTarget();
+  clearSendResult();
+  updateSummary();
+  updateSendButton();
+  doTargetSearch("");              // Aufgaben des Projekts sofort auflisten
+}
+
+function selectTarget(r) {
+  selectedTarget = r;
+  document.getElementById("target-picker").style.display = "none";
+  document.getElementById("target-selected").style.display = "flex";
+  setText("sel-name", r.name);
+  setText("sel-meta", r.meta || "—");
   clearSendResult();
   updateSummary();
   updateSendButton();
@@ -329,16 +468,30 @@ function onSend() {
   }
 }
 
+/* Zielangabe für das Relay (res_model + res_id; bei Kontakten zusätzlich
+ * partner_id, damit ein noch nicht aktualisiertes Relay weiter funktioniert). */
+function targetFields() {
+  var fields = {
+    res_model: TARGET_TYPES[targetType].model,
+    res_id: selectedTarget.id
+  };
+  if (targetType === "contact") { fields.partner_id = selectedTarget.id; }
+  return fields;
+}
+
 function sendText() {
-  if (!selectedPartner) { return; }
+  if (!selectedTarget) { return; }
   var item = Office.context.mailbox.item;
 
   document.getElementById("btn-send").disabled = true;
   setSendResult("sending", "Wird an Odoo gesendet…");
 
   var scope = document.getElementById("scope-last").checked ? "last" : "all";
+  var fields = targetFields();
   var payload = {
-    partner_id: selectedPartner.id,
+    res_model: fields.res_model,
+    res_id: fields.res_id,
+    partner_id: fields.partner_id,
     scope: scope,
     body_text: bodyText || "",
     meta: {
@@ -367,7 +520,7 @@ function buildEmlFilename(item) {
 }
 
 function sendEml() {
-  if (!selectedPartner) { return; }
+  if (!selectedTarget) { return; }
   var item = Office.context.mailbox.item;
 
   document.getElementById("btn-send").disabled = true;
@@ -381,8 +534,11 @@ function sendEml() {
       return;
     }
     setSendResult("sending", "Wird an Odoo gesendet…");
+    var fields = targetFields();
     postToRelay("/chatter/eml", {
-      partner_id: selectedPartner.id,
+      res_model: fields.res_model,
+      res_id: fields.res_id,
+      partner_id: fields.partner_id,
       filename: buildEmlFilename(item),
       eml_base64: fileRes.value,
       subject: item.subject || ""

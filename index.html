@@ -6,7 +6,7 @@
   <title>An Odoo senden</title>
 
   <!-- Cache-Busting: bei jedem Deploy die Versionsnummer (?v=) erhöhen -->
-  <link rel="stylesheet" href="styles.css?v=2026-07-02-6" />
+  <link rel="stylesheet" href="styles.css?v=2026-07-15-1" />
 
   <!-- Office.js muss von Microsofts CDN geladen werden -->
   <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
@@ -82,23 +82,52 @@
         </div>
       </section>
 
-      <!-- Kontakt suchen (über das Relay -> Odoo) -->
+      <!-- Ziel in Odoo wählen (über das Relay -> Odoo) -->
       <section class="card">
-        <h2 class="card__title">Kontakt</h2>
+        <h2 class="card__title">Wohin in Odoo?</h2>
 
-        <div id="contact-picker">
-          <input class="search" id="contact-search" type="text" autocomplete="off"
-                 placeholder="Kontakt suchen (Name oder E-Mail)…" />
-          <div id="contact-status" class="results-status"></div>
-          <ul id="contact-results" class="results"></ul>
+        <select class="search" id="target-type">
+          <option value="contact" selected>Kontakt</option>
+          <option value="task">Projekt → Aufgabe</option>
+          <option value="sale_order">Verkaufsauftrag</option>
+          <option value="todo">ToDo</option>
+          <option value="opportunity">Verkaufschance</option>
+        </select>
+
+        <!-- Schritt 1 (nur bei Projekt → Aufgabe): Projekt wählen -->
+        <div id="project-step" style="display:none; margin-top:10px">
+          <label class="settings__label" for="project-search">Projekt</label>
+          <div id="project-picker">
+            <input class="search" id="project-search" type="text" autocomplete="off"
+                   placeholder="Projekt suchen…" />
+            <div id="project-status" class="results-status"></div>
+            <ul id="project-results" class="results"></ul>
+          </div>
+          <div id="project-selected" class="selected" style="display:none">
+            <div class="selected__info">
+              <div class="selected__name" id="project-sel-name"></div>
+              <div class="selected__meta" id="project-sel-meta"></div>
+            </div>
+            <button type="button" class="linkbtn" id="project-sel-change">Ändern</button>
+          </div>
         </div>
 
-        <div id="contact-selected" class="selected" style="display:none">
-          <div class="selected__info">
-            <div class="selected__name" id="sel-name"></div>
-            <div class="selected__meta" id="sel-meta"></div>
+        <!-- Ziel-Datensatz suchen -->
+        <div id="target-area" style="margin-top:10px">
+          <label class="settings__label" for="target-search" id="target-label">Kontakt</label>
+          <div id="target-picker">
+            <input class="search" id="target-search" type="text" autocomplete="off"
+                   placeholder="Kontakt suchen (Name oder E-Mail)…" />
+            <div id="target-status" class="results-status"></div>
+            <ul id="target-results" class="results"></ul>
           </div>
-          <button type="button" class="linkbtn" id="sel-change">Ändern</button>
+          <div id="target-selected" class="selected" style="display:none">
+            <div class="selected__info">
+              <div class="selected__name" id="sel-name"></div>
+              <div class="selected__meta" id="sel-meta"></div>
+            </div>
+            <button type="button" class="linkbtn" id="sel-change">Ändern</button>
+          </div>
         </div>
       </section>
 
@@ -111,6 +140,6 @@
     </div>
   </main>
 
-  <script src="taskpane.js?v=2026-07-02-6"></script>
+  <script src="taskpane.js?v=2026-07-15-1"></script>
 </body>
 </html>
