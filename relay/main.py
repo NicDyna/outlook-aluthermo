@@ -13,8 +13,10 @@ Configuration comes entirely from environment variables (set in Railway):
   ALLOWED_ORIGIN  the GitHub Pages origin allowed to call this relay
 """
 
+import logging
 import os
 import re
+import secrets
 from typing import Any, List, Optional
 
 import httpx
@@ -29,6 +31,10 @@ ODOO_DB = os.environ.get("ODOO_DB", "")
 CLIENT_TOKEN = os.environ.get("CLIENT_TOKEN", "")
 ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "https://nicdyna.github.io")
 
+# Fehlerdetails landen im Railway-Log (Deployments -> View Logs), nie beim Aufrufer
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("relay")
+
 app = FastAPI(title="Outlook -> Odoo Relay", version="0.1.0")
 
 # Nur die GitHub-Pages-Herkunft darf das Relay aus dem Browser aufrufen.
@@ -41,8 +47,10 @@ app.add_middleware(
 
 
 def _check_token(token: Optional[str]) -> None:
-    """Nur Aufrufe mit dem korrekten Client-Token zulassen."""
-    if not CLIENT_TOKEN or token != CLIENT_TOKEN:
+    """Nur Aufrufe mit dem korrekten Client-Token zulassen (zeitkonstanter Vergleich)."""
+    if not CLIENT_TOKEN or not token or not secrets.compare_digest(
+        token.encode("utf-8"), CLIENT_TOKEN.encode("utf-8")
+    ):
         raise HTTPException(status_code=401, detail="Ungültiger oder fehlender Client-Token.")
 
 
@@ -71,10 +79,11 @@ async def _odoo_call(model: str, method: str, payload: dict) -> Any:
         raise HTTPException(status_code=504, detail=f"Odoo nicht erreichbar: {exc}")
 
     if resp.status_code != 200:
-        # Odoo-Fehler weiterreichen (gekürzt; enthält keine Secrets)
+        # Details nur ins Log, nicht an den Aufrufer (keine Odoo-Interna preisgeben)
+        log.error("Odoo-Fehler %s bei %s/%s: %s", resp.status_code, model, method, resp.text[:1000])
         raise HTTPException(
             status_code=502,
-            detail=f"Odoo-Fehler ({resp.status_code}): {resp.text[:500]}",
+            detail=f"Odoo-Fehler ({resp.status_code}) – Details stehen im Railway-Log.",
         )
     return resp.json()
 
@@ -466,9 +475,10 @@ async def chatter_eml(
     create_result = await _odoo_call("ir.attachment", "create", {"vals_list": [attachment_vals]})
     attachment_id = _extract_id(create_result)
     if not attachment_id:
+        log.error("Anhang-ID nicht erkannt. Odoo-Antwort auf create: %r", create_result)
         raise HTTPException(
             status_code=502,
-            detail=f"Anhang-ID nicht erkannt. Odoo-Antwort auf create: {create_result}",
+            detail="Anhang-ID nicht erkannt – Details stehen im Railway-Log.",
         )
 
     # 2) Interne Chatter-Notiz mit verknüpftem Anhang
