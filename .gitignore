@@ -1,0 +1,11 @@
+# Python – kompilierte Dateien gehören nicht ins Repo
+__pycache__/
+*.pyc
+
+# Lokale Secrets/Umgebungsvariablen dürfen NIE committed werden
+.env
+.env.*
+
+# Betriebssystem-Kram
+.DS_Store
+Thumbs.db
