@@ -13,6 +13,9 @@ Configuration comes entirely from environment variables (set in Railway):
   ALLOWED_ORIGIN  the GitHub Pages origin allowed to call this relay
 """
 
+import base64
+import binascii
+import json
 import logging
 import os
 import re
@@ -36,7 +39,141 @@ ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "https://nicdyna.github.io")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("relay")
 
+# --- Größen-Grenzen (greifen, BEVOR der Body gelesen wird) ---
+
+# Größte E-Mail, die als .eml archiviert werden darf (entpackt, nicht base64).
+# Hinweis: eine Anfrage an dieser Grenze belegt auf Railway kurzzeitig ein
+# Mehrfaches davon an Arbeitsspeicher. Startet das Relay bei großen Anhängen
+# neu, diesen Wert verkleinern; 25 MB decken praktisch jede Outlook-Mail ab.
+MAX_EML_BYTES = 50 * 1024 * 1024
+
+# base64 ist rund 4/3 so groß wie die Rohdaten, plus etwas Reserve.
+MAX_EML_B64_CHARS = (MAX_EML_BYTES // 3 + 1) * 4 + 4096
+
+# Obergrenze für den gesamten HTTP-Body, je Endpunkt.
+MAX_BODY_BYTES = {
+    "/chatter/eml": MAX_EML_B64_CHARS + 64 * 1024,   # Anhang + Kopfdaten
+    "/chatter/note": 2 * 1024 * 1024,                # nur Text
+}
+DEFAULT_MAX_BODY_BYTES = 64 * 1024                   # Suche, Benutzerliste
+
+# Einziger Endpunkt, der ohne Token erreichbar ist.
+OPEN_PATHS = {"/health"}
+
+
+def _token_ok(token: Optional[str]) -> bool:
+    """Zeitkonstanter Vergleich; ohne gesetzten CLIENT_TOKEN wird alles abgelehnt."""
+    if not CLIENT_TOKEN or not token:
+        return False
+    return secrets.compare_digest(token.encode("utf-8"), CLIENT_TOKEN.encode("utf-8"))
+
+
+def _size_message(limit: int) -> str:
+    unit = "MB" if limit >= 1024 * 1024 else "KB"
+    value = limit // (1024 * 1024) if unit == "MB" else limit // 1024
+    return f"Anfrage zu groß (Grenze: {value} {unit})."
+
+
+async def _send_json(send, status: int, detail: str) -> None:
+    """Antwort direkt auf ASGI-Ebene senden, ohne den Body gelesen zu haben."""
+    payload = json.dumps({"detail": detail}).encode("utf-8")
+    await send({
+        "type": "http.response.start",
+        "status": status,
+        "headers": [
+            (b"content-type", b"application/json; charset=utf-8"),
+            (b"content-length", str(len(payload)).encode("ascii")),
+        ],
+    })
+    await send({"type": "http.response.body", "body": payload})
+
+
+class TokenAndSizeGate:
+    """Prüft Token und Größe, BEVOR FastAPI den Request-Body einliest.
+
+    Der Token-Test in den Endpunkten selbst kommt zu spät: FastAPI liest und
+    prüft den kompletten Body, bevor die Funktion überhaupt startet. Ohne diese
+    Middleware könnte also jeder ohne Token beliebig große Daten schicken und
+    das Relay lahmlegen. Hier fällt die Entscheidung, bevor ein einziges Byte
+    des Bodys gelesen wird; uvicorn stoppt dann von selbst bei rund 64 KB.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    @staticmethod
+    def _header(scope, name: bytes) -> Optional[str]:
+        """Header aus dem rohen ASGI-Scope lesen (Namen sind dort klein geschrieben)."""
+        for key, value in scope.get("headers", []):
+            if key == name:
+                return value.decode("latin-1", "replace")
+        return None
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        # CORS-Vorabfragen tragen nie einen Token und müssen durchgelassen werden.
+        if scope.get("method") == "OPTIONS" or path in OPEN_PATHS:
+            await self.app(scope, receive, send)
+            return
+
+        if not _token_ok(self._header(scope, b"x-client-token")):
+            await _send_json(send, 401, "Ungültiger oder fehlender Client-Token.")
+            return
+
+        limit = MAX_BODY_BYTES.get(path, DEFAULT_MAX_BODY_BYTES)
+
+        declared = self._header(scope, b"content-length")
+        if declared is not None:
+            try:
+                length = int(declared)
+            except ValueError:
+                await _send_json(send, 400, "Ungültige Content-Length-Angabe.")
+                return
+            if length > limit:
+                await _send_json(send, 413, _size_message(limit))
+                return
+            await self.app(scope, receive, send)
+            return
+
+        # Ohne Content-Length (chunked): selbst mitzählen und notfalls abbrechen,
+        # bevor die Daten an FastAPI weitergereicht werden.
+        chunks: List[bytes] = []
+        total = 0
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":
+                break
+            chunk = message.get("body", b"")
+            total += len(chunk)
+            if total > limit:
+                await _send_json(send, 413, _size_message(limit))
+                return
+            chunks.append(chunk)
+            if not message.get("more_body", False):
+                break
+
+        buffered = b"".join(chunks)
+        replayed = False
+
+        async def replay():
+            nonlocal replayed
+            if replayed:
+                return {"type": "http.disconnect"}
+            replayed = True
+            return {"type": "http.request", "body": buffered, "more_body": False}
+
+        await self.app(scope, replay, send)
+
+
 app = FastAPI(title="Outlook -> Odoo Relay", version="0.1.0")
+
+# Reihenfolge beachten: zuletzt hinzugefügt liegt außen. CORS muss außen liegen,
+# damit auch die 401/413-Antworten der Gate-Middleware die CORS-Header bekommen.
+app.add_middleware(TokenAndSizeGate)
 
 # Nur die GitHub-Pages-Herkunft darf das Relay aus dem Browser aufrufen.
 app.add_middleware(
@@ -48,10 +185,8 @@ app.add_middleware(
 
 
 def _check_token(token: Optional[str]) -> None:
-    """Nur Aufrufe mit dem korrekten Client-Token zulassen (zeitkonstanter Vergleich)."""
-    if not CLIENT_TOKEN or not token or not secrets.compare_digest(
-        token.encode("utf-8"), CLIENT_TOKEN.encode("utf-8")
-    ):
+    """Zweite Absicherung; die Gate-Middleware hat den Token bereits geprüft."""
+    if not _token_ok(token):
         raise HTTPException(status_code=401, detail="Ungültiger oder fehlender Client-Token.")
 
 
@@ -147,6 +282,47 @@ def _safe_filename(name: str) -> str:
     return name[:120] or "E-Mail.eml"
 
 
+def _escape_like(value: str) -> str:
+    """% und _ entwerten, damit eine Suche nach "%" nicht den ganzen Bestand findet.
+
+    Odoo baut daraus ein SQL-ILIKE ohne eigene ESCAPE-Angabe; dort ist der
+    Backslash das Standard-Escape-Zeichen (odoo/orm/fields.py, Branch 19.0).
+    """
+    return re.sub(r"([\\%_])", r"\\\1", value)
+
+
+def _eml_too_large() -> str:
+    return f"E-Mail zu groß (max. {MAX_EML_BYTES // (1024 * 1024)} MB)."
+
+
+# Eine .eml beginnt immer mit einer Kopfzeile, etwa "Received:" oder "From:".
+_EML_FIRST_HEADER = re.compile(rb"^[A-Za-z][A-Za-z0-9-]{0,60}:")
+
+
+def _decode_eml(data: str) -> str:
+    """Anhang prüfen, bevor etwas an Odoo geht: Größe, gültiges base64, E-Mail-Form.
+
+    Gibt das normalisierte base64 zurück, damit Odoo genau die Daten bekommt,
+    die hier geprüft wurden.
+    """
+    if len(data or "") > MAX_EML_B64_CHARS:
+        raise HTTPException(status_code=413, detail=_eml_too_large())
+    try:
+        raw = base64.b64decode(data or "", validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=400, detail="Anhang ist kein gültiges base64.")
+    if not raw:
+        raise HTTPException(status_code=400, detail="Anhang ist leer.")
+    if len(raw) > MAX_EML_BYTES:
+        raise HTTPException(status_code=413, detail=_eml_too_large())
+    if not _EML_FIRST_HEADER.match(raw[:1024]):
+        raise HTTPException(
+            status_code=400,
+            detail="Anhang sieht nicht wie eine E-Mail aus (keine Kopfzeile am Anfang).",
+        )
+    return base64.b64encode(raw).decode("ascii")
+
+
 def _html_escape(text: str) -> str:
     return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -157,15 +333,28 @@ def _nl2br(text: str) -> str:
     return escaped.replace("\n", "<br/>")
 
 
+# Zitat-Kopfzeilen sind immer kurz. Längere Zeilen werden gar nicht erst geprüft,
+# damit eine einzelne sehr lange Zeile die Regex-Suche nicht ausbremsen kann.
+MAX_MATCH_LINE = 500
+
 # Marker, an denen der zitierte Verlauf üblicherweise beginnt (DE + EN). Reine Heuristik.
+# Die Platzhalter sind bewusst begrenzt (.{0,200} statt .+): zwei unbegrenzte
+# Platzhalter in einer Zeile lassen die Laufzeit quadratisch wachsen.
 _QUOTE_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [
     r"^-{2,}\s*(Urspr[uü]ngliche Nachricht|Original Message)\s*-{2,}\s*$",
     r"^_{5,}\s*$",
-    r"^Am\s.+\sschrieb.+:\s*$",
-    r"^On\s.+\swrote:\s*$",
+    r"^Am\s.{1,200}?\sschrieb.{0,200}:\s*$",
+    r"^On\s.{1,200}?\swrote:\s*$",
     r"^(Von|From):\s.+$",
     r"^>.*$",
 ]]
+
+
+def _matches_any(stripped: str, patterns) -> bool:
+    """Zeile gegen die Marker prüfen; eine zu lange Zeile ist nie ein Marker."""
+    if not stripped or len(stripped) > MAX_MATCH_LINE:
+        return False
+    return any(rx.match(stripped) for rx in patterns)
 
 
 def _extract_last_message(text: str) -> str:
@@ -175,8 +364,7 @@ def _extract_last_message(text: str) -> str:
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     cut = None
     for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped and any(rx.match(stripped) for rx in _QUOTE_PATTERNS):
+        if _matches_any(line.strip(), _QUOTE_PATTERNS):
             cut = i
             break
     if not cut:  # None oder 0 -> nichts Sinnvolles gefunden, ganzen Text behalten
@@ -192,12 +380,12 @@ _HEADER_FIELD = re.compile(
     re.IGNORECASE,
 )
 
-# "Harte" Nachrichtengrenzen (nicht die einzelnen >-Zeilen)
+# "Harte" Nachrichtengrenzen (nicht die einzelnen >-Zeilen), ebenfalls begrenzt
 _HARD_BOUNDARY = [re.compile(p, re.IGNORECASE) for p in [
     r"^-{2,}\s*(Urspr[uü]ngliche Nachricht|Original Message)\s*-{2,}\s*$",
     r"^_{5,}\s*$",
-    r"^Am\s.+\sschrieb.+:\s*$",
-    r"^On\s.+\swrote:\s*$",
+    r"^Am\s.{1,200}?\sschrieb.{0,200}:\s*$",
+    r"^On\s.{1,200}?\swrote:\s*$",
 ]]
 
 _DIVIDER = "──────────── vorherige Nachricht ────────────"
@@ -213,8 +401,8 @@ def _format_thread_html(text: str) -> str:
     for line in lines:
         stripped = line.strip()
         is_quote = stripped.startswith(">")
-        is_hard = any(rx.match(stripped) for rx in _HARD_BOUNDARY)
-        is_header = bool(_HEADER_FIELD.match(stripped))
+        is_hard = _matches_any(stripped, _HARD_BOUNDARY)
+        is_header = _matches_any(stripped, (_HEADER_FIELD,))
 
         if armed and out and (is_hard or is_header or (is_quote and not in_quote)):
             out.append("")
@@ -252,6 +440,11 @@ def _build_note_html(meta: "NoteMeta", body_html: str, attachments: List[str]) -
 
 class PartnerSearch(BaseModel):
     query: str
+
+
+class UsersRequest(BaseModel):
+    # E-Mail-Adresse des angemeldeten Outlook-Postfachs, nur für den Vorschlag
+    mailbox: str = ""
 
 
 class TargetSearch(BaseModel):
@@ -414,12 +607,13 @@ async def partners_search(
     """Sucht Kontakte (res.partner) nach Name oder E-Mail (Teiltext)."""
     _check_token(x_client_token)
 
-    query = (body.query or "").strip()
+    query = (body.query or "").strip()[:100]
     if len(query) < 2:
         return {"partners": []}
 
+    like = _escape_like(query)
     payload = {
-        "domain": ["|", ["name", "ilike", query], ["email", "ilike", query]],
+        "domain": ["|", ["name", "ilike", like], ["email", "ilike", like]],
         "fields": ["name", "email", "parent_id", "commercial_company_name", "is_company"],
         "limit": 20,
         "order": "name asc",
@@ -447,14 +641,16 @@ async def targets_search(
     _check_token(x_client_token)
 
     t = (body.type or "").strip()
-    q = (body.query or "").strip()
+    q = (body.query or "").strip()[:100]
+    # Platzhalter entwerten: eine Suche nach "%" darf nicht alles zurückgeben.
+    like = _escape_like(q)
     results = []
 
     if t == "contact":
         if len(q) < 2:
             return {"results": []}
         rows = await _odoo_call("res.partner", "search_read", {
-            "domain": ["|", ["name", "ilike", q], ["email", "ilike", q]],
+            "domain": ["|", ["name", "ilike", like], ["email", "ilike", like]],
             "fields": ["name", "email", "parent_id", "commercial_company_name", "is_company"],
             "limit": 20,
             "order": "name asc",
@@ -467,7 +663,7 @@ async def targets_search(
             results.append({"id": r.get("id"), "name": name, "meta": meta})
 
     elif t == "project":
-        domain = [["name", "ilike", q]] if q else []
+        domain = [["name", "ilike", like]] if q else []
         rows = await _odoo_call("project.project", "search_read", {
             "domain": domain,
             "fields": ["name", "partner_id"],
@@ -483,7 +679,7 @@ async def targets_search(
             raise HTTPException(status_code=400, detail="project_id fehlt für die Aufgabensuche.")
         domain: List[Any] = [["project_id", "=", body.project_id]]
         if q:
-            domain.append(["name", "ilike", q])
+            domain.append(["name", "ilike", like])
         rows = await _odoo_call("project.task", "search_read", {
             "domain": domain,
             "fields": ["name", "stage_id"],
@@ -498,7 +694,7 @@ async def targets_search(
         # ToDos sind in Odoo Aufgaben ohne Projekt
         domain = [["project_id", "=", False]]
         if q:
-            domain.append(["name", "ilike", q])
+            domain.append(["name", "ilike", like])
         rows = await _odoo_call("project.task", "search_read", {
             "domain": domain,
             "fields": ["name", "date_deadline"],
@@ -514,7 +710,7 @@ async def targets_search(
         if len(q) < 2:
             return {"results": []}
         rows = await _odoo_call("sale.order", "search_read", {
-            "domain": ["|", ["name", "ilike", q], ["partner_id", "ilike", q]],
+            "domain": ["|", ["name", "ilike", like], ["partner_id", "ilike", like]],
             "fields": ["name", "partner_id", "state"],
             "limit": 20,
             "order": "id desc",
@@ -530,9 +726,9 @@ async def targets_search(
         rows = await _odoo_call("crm.lead", "search_read", {
             "domain": ["&", ["type", "=", "opportunity"],
                        "|", "|",
-                       ["name", "ilike", q],
-                       ["partner_id", "ilike", q],
-                       ["partner_name", "ilike", q]],
+                       ["name", "ilike", like],
+                       ["partner_id", "ilike", like],
+                       ["partner_name", "ilike", like]],
             "fields": ["name", "partner_id", "partner_name", "stage_id"],
             "limit": 20,
             "order": "id desc",
@@ -550,11 +746,30 @@ async def targets_search(
 
 @app.post("/users/list")
 async def users_list(
+    body: UsersRequest,
     x_client_token: Optional[str] = Header(default=None),
 ):
-    """Liefert die internen Odoo-Benutzer für die Absender-Auswahl im Add-in."""
+    """Liefert die internen Odoo-Benutzer für die Absender-Auswahl im Add-in.
+
+    Login und E-Mail bleiben im Relay: das Add-in bekommt nur Name und
+    partner_id. Der Abgleich mit dem angemeldeten Outlook-Postfach passiert
+    hier, das Add-in erhält lediglich den fertigen Vorschlag.
+    """
     _check_token(x_client_token)
-    return {"users": await _internal_users()}
+
+    users = await _internal_users()
+    mailbox = (body.mailbox or "").strip().lower()[:200]
+    suggested = None
+    if mailbox:
+        for u in users:
+            if u["login"].lower() == mailbox or u["email"].lower() == mailbox:
+                suggested = u["partner_id"]
+                break
+
+    return {
+        "users": [{"partner_id": u["partner_id"], "name": u["name"]} for u in users],
+        "suggested_partner_id": suggested,
+    }
 
 
 @app.post("/chatter/eml")
@@ -570,11 +785,12 @@ async def chatter_eml(
     # Absender kein verwaister Anhang in Odoo zurückbleibt.
     author_id = await _resolve_author(body.author_id)
     filename = _safe_filename(body.filename)
+    eml_base64 = _decode_eml(body.eml_base64)
 
     # 1) Anhang direkt am Ziel-Datensatz anlegen
     attachment_vals = {
         "name": filename,
-        "datas": body.eml_base64,
+        "datas": eml_base64,
         "mimetype": "message/rfc822",
         "res_model": model,
         "res_id": rid,

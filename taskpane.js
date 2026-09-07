@@ -20,6 +20,7 @@ var AUTHOR_KEY = "authorPartnerId";   // zuletzt gewählter Absender (je Postfac
 var clientToken = "";
 var authors = [];                // interne Odoo-Benutzer für die Absender-Auswahl
 var selectedAuthorId = null;     // Partner-ID des gewählten Absenders
+var suggestedAuthorId = null;    // vom Relay vorgeschlagener Absender (Postfach-Abgleich)
 var targetType = "contact";      // contact | task | sale_order | todo | opportunity
 var selectedProject = null;      // nur bei targetType === "task"
 var selectedTarget = null;       // der Datensatz, in dessen Chatter geschrieben wird
@@ -490,16 +491,23 @@ function loadAuthors() {
   if (!clientToken) { return; }
   setText("author-note", "Benutzer werden geladen…");
 
+  // Die eigene Postfach-Adresse geht mit; das Relay vergleicht sie mit den
+  // Odoo-Logins und schickt nur den Vorschlag zurück. Logins und E-Mail-Adressen
+  // der Kollegen bleiben dadurch auf dem Server.
+  var profile = Office.context.mailbox.userProfile;
+  var mailbox = (profile && profile.emailAddress) || "";
+
   fetch(RELAY_BASE_URL + "/users/list", {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Client-Token": clientToken },
-    body: "{}"
+    body: JSON.stringify({ mailbox: mailbox })
   }).then(function (r) {
     if (r.status === 401) { throw new Error("401"); }
     if (!r.ok) { throw new Error("Relay " + r.status); }
     return r.json();
   }).then(function (data) {
     authors = (data && data.users) || [];
+    suggestedAuthorId = (data && data.suggested_partner_id) || null;
     renderAuthors();
   }).catch(function (err) {
     authors = [];
@@ -539,22 +547,12 @@ function renderAuthors() {
   updateSummary();
 }
 
-/* Vorauswahl: 1) zuletzt gewählter Benutzer, 2) der Odoo-Benutzer, dessen Login
- * oder E-Mail zum angemeldeten Outlook-Postfach passt, 3) der erste der Liste. */
+/* Vorauswahl: 1) zuletzt gewählter Benutzer, 2) der Vorschlag des Relays
+ * (Abgleich mit dem angemeldeten Postfach), 3) der erste der Liste. */
 function pickDefaultAuthor() {
   var saved = parseInt(Office.context.roamingSettings.get(AUTHOR_KEY), 10);
   if (saved && hasAuthor(saved)) { return saved; }
-
-  var profile = Office.context.mailbox.userProfile;
-  var mine = ((profile && profile.emailAddress) || "").toLowerCase();
-  if (mine) {
-    for (var i = 0; i < authors.length; i++) {
-      var u = authors[i];
-      if ((u.login || "").toLowerCase() === mine || (u.email || "").toLowerCase() === mine) {
-        return u.partner_id;
-      }
-    }
-  }
+  if (suggestedAuthorId && hasAuthor(suggestedAuthorId)) { return suggestedAuthorId; }
   return authors[0].partner_id;
 }
 
