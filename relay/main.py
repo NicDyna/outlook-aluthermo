@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import secrets
+import time
 from typing import Any, List, Optional
 
 import httpx
@@ -95,6 +96,19 @@ def _m2o_name(value: Any) -> str:
     if isinstance(value, dict):
         return value.get("display_name") or value.get("name") or ""
     return ""
+
+
+def _m2o_id(value: Any) -> Optional[int]:
+    """ID eines many2one-Feldes robust ermitteln ([id, name] / {…} / int / False)."""
+    if isinstance(value, bool):      # Odoo liefert False für leere many2one-Felder
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, list) and value and isinstance(value[0], int):
+        return value[0]
+    if isinstance(value, dict) and isinstance(value.get("id"), int):
+        return value["id"]
+    return None
 
 
 def _company_of(record: dict) -> str:
@@ -275,10 +289,90 @@ def _record_url(model: str, rid: int) -> str:
     return f"{ODOO_BASE_URL}/web#id={rid}&model={model}&view_type=form"
 
 
+# --- Absender: unter welchem Odoo-Benutzer die Notiz erscheinen darf ---
+
+# Die Benutzerliste ändert sich selten; kurzes Zwischenspeichern spart bei jedem
+# Senden eine zusätzliche Odoo-Abfrage.
+USER_CACHE_TTL = 300  # Sekunden
+_user_cache: dict = {"at": 0.0, "users": []}
+
+
+async def _internal_users(force: bool = False) -> List[dict]:
+    """Aktive interne Odoo-Benutzer laden (ohne Portal- und Public-Benutzer)."""
+    now = time.monotonic()
+    if not force and _user_cache["users"] and (now - _user_cache["at"]) < USER_CACHE_TTL:
+        return _user_cache["users"]
+
+    rows = await _odoo_call("res.users", "search_read", {
+        "domain": [["share", "=", False], ["active", "=", True]],
+        "fields": ["name", "login", "email", "partner_id"],
+        "limit": 200,
+        "order": "name asc",
+    })
+
+    users = []
+    for r in (rows or []):
+        partner_id = _m2o_id(r.get("partner_id"))
+        if not partner_id:
+            continue
+        users.append({
+            "id": r.get("id"),
+            "partner_id": partner_id,
+            "name": r.get("name") or "",
+            "login": r.get("login") or "",
+            "email": r.get("email") or "",
+        })
+
+    _user_cache["users"] = users
+    _user_cache["at"] = now
+    return users
+
+
+async def _resolve_author(author_id: Optional[int]) -> Optional[int]:
+    """Prüft, dass der gewünschte Absender ein interner Odoo-Benutzer ist.
+
+    Ohne diese Prüfung könnte mit dem Client-Token eine Notiz im Namen eines
+    beliebigen Partners erscheinen, zum Beispiel im Namen eines Kunden.
+    Ohne author_id bleibt alles wie bisher: der technische API-Benutzer
+    ist dann der Autor.
+    """
+    if not author_id:
+        return None
+    if author_id not in {u["partner_id"] for u in await _internal_users()}:
+        # Cache könnte veraltet sein (neuer Kollege) -> einmal frisch nachladen
+        if author_id not in {u["partner_id"] for u in await _internal_users(force=True)}:
+            raise HTTPException(
+                status_code=400,
+                detail="Ungültiger Absender – bitte erneut auswählen.",
+            )
+    return author_id
+
+
+def _post_payload(rid: int, body_html: str, author_id: Optional[int],
+                  attachment_ids: Optional[List[int]] = None) -> dict:
+    """Einheitliche Argumente für message_post (interne Notiz, kein Mailversand)."""
+    payload: dict = {
+        "ids": [rid],
+        "body": body_html,
+        # sonst behandelt Odoo den String als Text und zeigt HTML-Tags wörtlich
+        "body_is_html": True,
+        "message_type": "comment",
+        "subtype_xmlid": "mail.mt_note",
+    }
+    if attachment_ids:
+        payload["attachment_ids"] = attachment_ids
+    if author_id:
+        # Odoo übernimmt author_id unverändert (mail.thread._message_compute_author),
+        # die Notiz erscheint dadurch unter dem gewählten Benutzer.
+        payload["author_id"] = author_id
+    return payload
+
+
 class EmlAttach(BaseModel):
     partner_id: Optional[int] = None   # Altform (Kontakt)
     res_model: Optional[str] = None
     res_id: Optional[int] = None
+    author_id: Optional[int] = None    # Partner-ID des gewählten Odoo-Benutzers
     filename: str
     eml_base64: str
     subject: str = ""
@@ -296,6 +390,7 @@ class ChatterNote(BaseModel):
     partner_id: Optional[int] = None   # Altform (Kontakt)
     res_model: Optional[str] = None
     res_id: Optional[int] = None
+    author_id: Optional[int] = None    # Partner-ID des gewählten Odoo-Benutzers
     scope: str = "all"          # "all" = ganzer Verlauf, "last" = nur letzte Nachricht
     body_text: str = ""
     meta: NoteMeta
@@ -453,6 +548,15 @@ async def targets_search(
     return {"results": results}
 
 
+@app.post("/users/list")
+async def users_list(
+    x_client_token: Optional[str] = Header(default=None),
+):
+    """Liefert die internen Odoo-Benutzer für die Absender-Auswahl im Add-in."""
+    _check_token(x_client_token)
+    return {"users": await _internal_users()}
+
+
 @app.post("/chatter/eml")
 async def chatter_eml(
     body: EmlAttach,
@@ -462,6 +566,9 @@ async def chatter_eml(
     _check_token(x_client_token)
 
     model, rid = _resolve_target(body.res_model, body.res_id, body.partner_id)
+    # Absender vor dem Anlegen des Anhangs prüfen, damit bei einem ungültigen
+    # Absender kein verwaister Anhang in Odoo zurückbleibt.
+    author_id = await _resolve_author(body.author_id)
     filename = _safe_filename(body.filename)
 
     # 1) Anhang direkt am Ziel-Datensatz anlegen
@@ -484,14 +591,10 @@ async def chatter_eml(
     # 2) Interne Chatter-Notiz mit verknüpftem Anhang
     subject = body.subject or filename
     note_body = f"<p>E-Mail archiviert: {_html_escape(subject)}</p>"
-    post_result = await _odoo_call(model, "message_post", {
-        "ids": [rid],
-        "body": note_body,
-        "body_is_html": True,  # sonst behandelt Odoo den String als Text und zeigt HTML-Tags wörtlich
-        "message_type": "comment",
-        "subtype_xmlid": "mail.mt_note",
-        "attachment_ids": [attachment_id],
-    })
+    post_result = await _odoo_call(
+        model, "message_post",
+        _post_payload(rid, note_body, author_id, attachment_ids=[attachment_id]),
+    )
 
     return {
         "ok": True,
@@ -510,6 +613,7 @@ async def chatter_note(
     _check_token(x_client_token)
 
     model, rid = _resolve_target(body.res_model, body.res_id, body.partner_id)
+    author_id = await _resolve_author(body.author_id)
 
     text = body.body_text or ""
     if body.scope == "last":
@@ -518,13 +622,10 @@ async def chatter_note(
         body_html = _format_thread_html(text)
 
     note_html = _build_note_html(body.meta, body_html, body.attachments)
-    post_result = await _odoo_call(model, "message_post", {
-        "ids": [rid],
-        "body": note_html,
-        "body_is_html": True,
-        "message_type": "comment",
-        "subtype_xmlid": "mail.mt_note",
-    })
+    post_result = await _odoo_call(
+        model, "message_post",
+        _post_payload(rid, note_html, author_id),
+    )
 
     return {
         "ok": True,

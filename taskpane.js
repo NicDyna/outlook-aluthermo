@@ -7,13 +7,19 @@
  *
  * M6: Ziel wählbar – Kontakt, Projekt→Aufgabe, Verkaufsauftrag, ToDo
  * oder Verkaufschance. Bei Aufgaben erst Projekt, dann Aufgabe wählen.
+ *
+ * M7: Absender wählbar – die Notiz erscheint in der Chatter unter dem
+ * gewählten Odoo-Benutzer statt unter dem technischen API-Benutzer.
  */
 
 /* ---------- Konfiguration ---------- */
 var RELAY_BASE_URL = "https://aluthermo.up.railway.app";  // nicht geheim
 var TOKEN_KEY = "clientToken";
+var AUTHOR_KEY = "authorPartnerId";   // zuletzt gewählter Absender (je Postfach gemerkt)
 
 var clientToken = "";
+var authors = [];                // interne Odoo-Benutzer für die Absender-Auswahl
+var selectedAuthorId = null;     // Partner-ID des gewählten Absenders
 var targetType = "contact";      // contact | task | sale_order | todo | opportunity
 var selectedProject = null;      // nur bei targetType === "task"
 var selectedTarget = null;       // der Datensatz, in dessen Chatter geschrieben wird
@@ -49,11 +55,14 @@ Office.onReady(function (info) {
   setupSettingsUi();
   setupChoiceUi();
   setupTargetUi();
+  setupAuthorUi();
   loadItemDetails();
 
   if (clientToken) {
     showMainFlow();
-    // Die Absender-Suche stößt applyTargetType() (in setupTargetUi) bereits an.
+    loadAuthors();
+    // Die Kontaktsuche nach dem Mail-Absender stößt applyTargetType()
+    // (in setupTargetUi) bereits an.
   } else {
     setText("settings-hint", "Bitte einmalig den Zugriffs-Token eingeben, um Kontakte zu suchen.");
     showSettings();
@@ -145,6 +154,7 @@ function saveToken() {
       setText("settings-status", "");
       showMainFlow();
       applyTargetType();
+      loadAuthors();
     } else {
       setText("settings-status", "Speichern fehlgeschlagen: " +
         (res.error && res.error.message ? res.error.message : "unbekannter Fehler"));
@@ -243,6 +253,8 @@ function updateSummary() {
   } else {
     parts.push("Kein Ziel gewählt (" + cfg.label + ")");
   }
+  var who = authorName();
+  if (who) { parts.push("Gesendet von: " + who); }
   setText("selection-summary", parts.join(" · "));
 }
 
@@ -458,6 +470,105 @@ function selectTarget(r) {
   updateSendButton();
 }
 
+/* ---------- Absender: unter wessen Namen die Notiz in Odoo erscheint ---------- */
+
+function setupAuthorUi() {
+  document.getElementById("author-select").addEventListener("change", function (e) {
+    selectedAuthorId = parseInt(e.target.value, 10) || null;
+    if (selectedAuthorId) {
+      Office.context.roamingSettings.set(AUTHOR_KEY, selectedAuthorId);
+      Office.context.roamingSettings.saveAsync();
+    }
+    clearSendResult();
+    updateSummary();
+  });
+}
+
+/* Interne Odoo-Benutzer laden. Schlägt das fehl, bleibt das Add-in benutzbar:
+ * die Notiz erscheint dann wie bisher unter dem technischen API-Benutzer. */
+function loadAuthors() {
+  if (!clientToken) { return; }
+  setText("author-note", "Benutzer werden geladen…");
+
+  fetch(RELAY_BASE_URL + "/users/list", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Client-Token": clientToken },
+    body: "{}"
+  }).then(function (r) {
+    if (r.status === 401) { throw new Error("401"); }
+    if (!r.ok) { throw new Error("Relay " + r.status); }
+    return r.json();
+  }).then(function (data) {
+    authors = (data && data.users) || [];
+    renderAuthors();
+  }).catch(function (err) {
+    authors = [];
+    renderAuthors();
+    setText("author-note", err.message === "401"
+      ? "Zugriffs-Token ungültig – bitte in den Einstellungen prüfen."
+      : "Benutzerliste nicht erreichbar – die Notiz erscheint unter dem technischen Benutzer.");
+  });
+}
+
+function renderAuthors() {
+  var select = document.getElementById("author-select");
+  select.innerHTML = "";
+
+  if (!authors.length) {
+    var empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = "— nicht verfügbar —";
+    select.appendChild(empty);
+    select.disabled = true;
+    selectedAuthorId = null;
+    updateSummary();
+    return;
+  }
+
+  select.disabled = false;
+  authors.forEach(function (u) {
+    var opt = document.createElement("option");
+    opt.value = u.partner_id;
+    opt.textContent = u.name;
+    select.appendChild(opt);
+  });
+
+  selectedAuthorId = pickDefaultAuthor();
+  select.value = String(selectedAuthorId);
+  setText("author-note", "Die Notiz erscheint in Odoo unter diesem Namen.");
+  updateSummary();
+}
+
+/* Vorauswahl: 1) zuletzt gewählter Benutzer, 2) der Odoo-Benutzer, dessen Login
+ * oder E-Mail zum angemeldeten Outlook-Postfach passt, 3) der erste der Liste. */
+function pickDefaultAuthor() {
+  var saved = parseInt(Office.context.roamingSettings.get(AUTHOR_KEY), 10);
+  if (saved && hasAuthor(saved)) { return saved; }
+
+  var profile = Office.context.mailbox.userProfile;
+  var mine = ((profile && profile.emailAddress) || "").toLowerCase();
+  if (mine) {
+    for (var i = 0; i < authors.length; i++) {
+      var u = authors[i];
+      if ((u.login || "").toLowerCase() === mine || (u.email || "").toLowerCase() === mine) {
+        return u.partner_id;
+      }
+    }
+  }
+  return authors[0].partner_id;
+}
+
+function hasAuthor(partnerId) {
+  return authors.some(function (u) { return u.partner_id === partnerId; });
+}
+
+function authorName() {
+  for (var i = 0; i < authors.length; i++) {
+    if (authors[i].partner_id === selectedAuthorId) { return authors[i].name; }
+  }
+  return "";
+}
+
 /* ---------- Senden ---------- */
 
 function onSend() {
@@ -492,6 +603,7 @@ function sendText() {
     res_model: fields.res_model,
     res_id: fields.res_id,
     partner_id: fields.partner_id,
+    author_id: selectedAuthorId,
     scope: scope,
     body_text: bodyText || "",
     meta: {
@@ -539,6 +651,7 @@ function sendEml() {
       res_model: fields.res_model,
       res_id: fields.res_id,
       partner_id: fields.partner_id,
+      author_id: selectedAuthorId,
       filename: buildEmlFilename(item),
       eml_base64: fileRes.value,
       subject: item.subject || ""
